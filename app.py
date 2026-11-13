@@ -18,7 +18,7 @@ st.set_page_config(
 st.title("🎯 Big-Filter Pro: 98% Matchday & Quantitative Engine")
 st.markdown(
     "Scans all available matchday fixtures using **Dixon-Coles Poisson**, **Recent"
-    " Form**, **H2H Historic Dominance**, **Psychological Friction**, **EV Edge"
+    " Form**, **H2H Historic Dominance**, **Ultra-High Probability Defensive Shield (85%+)**, **EV Edge"
     " Detection**, and **Fractional Kelly Staking**."
 )
 
@@ -280,56 +280,44 @@ def evaluate_fixture_quant(
 
     dc_matrix = compute_dixon_coles_matrix(lambda_home, lambda_away)
 
-    prob_0_0 = dc_matrix[0, 0]
-    prob_1_0 = dc_matrix[1, 0]
-    prob_0_1 = dc_matrix[0, 1]
-    prob_over_1_5 = 1.0 - (prob_0_0 + prob_1_0 + prob_0_1)
-
+    # Core Probabilities
     prob_home_win = float(np.sum(np.tril(dc_matrix, -1)))
     prob_draw = float(np.sum(np.diag(dc_matrix)))
-    prob_away_win = float(np.sum(np.triu(dc_matrix, 1)))
     prob_1x = prob_home_win + prob_draw
-    prob_12 = prob_home_win + prob_away_win
 
-    prob_home_o15 = float(np.sum(dc_matrix[2:, :]))
-    prob_goals_2_4 = sum(
+    prob_u25 = sum(
         dc_matrix[x, y]
         for x in range(dc_matrix.shape[0])
         for y in range(dc_matrix.shape[1])
-        if 2 <= (x + y) <= 4
+        if (x + y) <= 2
     )
 
-    # Balanced operational gates
-    pass_over_1_5 = (prob_over_1_5 >= 0.82) and (lambda_total >= 2.40)
-    pass_1x = (h_unbeaten >= 0.65) and (prob_1x >= 0.85) and not is_derby
-    ppg_diff = h_ppg - a_ppg
-    pass_12 = (abs(ppg_diff) > 0.4) and (prob_12 >= 0.80)
-    pass_home_o15 = prob_home_o15 >= 0.55
-    pass_goal_range = prob_goals_2_4 >= 0.65
+    prob_home_ah_plus_15 = 1.0 - float(
+        sum(
+            dc_matrix[x, y]
+            for x in range(dc_matrix.shape[0])
+            for y in range(dc_matrix.shape[1])
+            if (y - x) >= 2
+        )
+    )
+
+    # --- ULTRA-HIGH PROBABILITY DEFENSIVE SHIELD (85%+) ---
+    pass_fortress_shield = (
+        (prob_1x >= 0.85)
+        and (prob_home_ah_plus_15 >= 0.90)
+        and (prob_u25 >= 0.86)
+        and (lambda_total <= 1.85)
+        and not is_derby
+    )
 
     qualified_markets = []
-    primary_prob = prob_over_1_5
-    
-    # Derive realistic market odds with a standard 5% bookmaker margin (vig)
-    if pass_over_1_5:
-        qualified_markets.append("Over 1.5")
-        market_odds = round(max(1.15, (1.0 / max(0.50, prob_over_1_5)) * 1.04), 2)
-    elif pass_1x:
-        qualified_markets.append("1X")
-        primary_prob = prob_1x
-        market_odds = round(max(1.15, (1.0 / max(0.50, prob_1x)) * 1.04), 2)
-    elif pass_12:
-        qualified_markets.append("12")
-        primary_prob = prob_12
-        market_odds = round(max(1.20, (1.0 / max(0.50, prob_12)) * 1.04), 2)
-    elif pass_home_o15:
-        qualified_markets.append("Home Over 1.5")
-        primary_prob = prob_home_o15
-        market_odds = round(max(1.30, (1.0 / max(0.40, prob_home_o15)) * 1.05), 2)
-    elif pass_goal_range:
-        qualified_markets.append("Goals 2-4")
-        primary_prob = prob_goals_2_4
-        market_odds = round(max(1.35, (1.0 / max(0.40, prob_goals_2_4)) * 1.05), 2)
+    primary_prob = prob_u25
+    market_odds = 1.30
+
+    if pass_fortress_shield:
+        qualified_markets.append("1X / Home +1.5 AH / Under 2.5 Shield (85%+)")
+        primary_prob = min(prob_1x, prob_home_ah_plus_15, prob_u25)
+        market_odds = round(max(1.30, (1.0 / primary_prob) * 1.04), 2)
     else:
         return {}
 
@@ -450,7 +438,7 @@ if st.button("🚀 Run Quantitative Scan", type="primary"):
             signal_blocks = []
             for _, r in df_results.iterrows():
                 block = (
-                    f"🚨 *98% Quant Signal Alert*\n"
+                    f"🚨 *Ultra-High Probability Quant Signal*\n"
                     f"⚽ *{r['Match']}* | `{r['Time']}`\n"
                     f"🏆 {r['Competition']}\n"
                     f"🎯 *Picks:* `{r['Markets']}`\n"
@@ -472,4 +460,4 @@ if st.button("🚀 Run Quantitative Scan", type="primary"):
             st.markdown("### 📱 Telegram Payload")
             st.code(full_telegram_payload, language="text")
         else:
-            st.info("0 matches met the strict Dixon-Coles + Positive EV criteria.")
+            st.info("0 matches met the strict 85%+ Defensive Shield criteria.")
