@@ -18,7 +18,7 @@ st.set_page_config(
 st.title("🎯 Big-Filter Pro: 98% Matchday & Quantitative Engine")
 st.markdown(
     "Scans all available matchday fixtures using **Dixon-Coles Poisson**, **Recent"
-    " Form**, **H2H Historic Dominance**, **Ultra-High Probability Defensive Shield (85%+)**, **EV Edge"
+    " Form**, **H2H Historic Dominance**, **Defensive Shield & Under 2.5 Logic**, **EV Edge"
     " Detection**, and **Fractional Kelly Staking**."
 )
 
@@ -301,12 +301,12 @@ def evaluate_fixture_quant(
         )
     )
 
-    # --- ULTRA-HIGH PROBABILITY DEFENSIVE SHIELD (85%+) ---
+    # --- BALANCED DEFENSIVE FORTRESS & UNDER SHIELD FILTER (80%+ Target) ---
     pass_fortress_shield = (
-        (prob_1x >= 0.85)
-        and (prob_home_ah_plus_15 >= 0.90)
-        and (prob_u25 >= 0.86)
-        and (lambda_total <= 1.85)
+        (prob_1x >= 0.80)
+        and (prob_home_ah_plus_15 >= 0.85)
+        and (prob_u25 >= 0.80)
+        and (lambda_total <= 2.20)
         and not is_derby
     )
 
@@ -315,9 +315,9 @@ def evaluate_fixture_quant(
     market_odds = 1.30
 
     if pass_fortress_shield:
-        qualified_markets.append("1X / Home +1.5 AH / Under 2.5 Shield (85%+)")
+        qualified_markets.append("1X / Home +1.5 AH / Under 2.5 Shield")
         primary_prob = min(prob_1x, prob_home_ah_plus_15, prob_u25)
-        market_odds = round(max(1.30, (1.0 / primary_prob) * 1.04), 2)
+        market_odds = round(max(1.25, (1.0 / primary_prob) * 1.04), 2)
     else:
         return {}
 
@@ -409,7 +409,7 @@ with st.sidebar:
     st.header("⚙️ Bankroll & Edge Controls")
     bankroll_input = st.number_input("Total Bankroll", min_value=10.0, value=1000.0, step=50.0)
     kelly_fraction_input = st.slider("Kelly Fraction Multiplier", 0.05, 1.0, 0.25, 0.05)
-    min_ev_input = st.number_input("Minimum EV Edge (%)", value=0.5, step=0.5)
+    min_ev_input = st.number_input("Minimum EV Edge (%)", value=0.0, step=0.5)
     auto_telegram = st.checkbox("Auto-Dispatch Qualified Signals to Telegram", value=True)
 
     st.divider()
@@ -438,7 +438,7 @@ if st.button("🚀 Run Quantitative Scan", type="primary"):
             signal_blocks = []
             for _, r in df_results.iterrows():
                 block = (
-                    f"🚨 *Ultra-High Probability Quant Signal*\n"
+                    f"🚨 *Defensive Shield Quant Signal*\n"
                     f"⚽ *{r['Match']}* | `{r['Time']}`\n"
                     f"🏆 {r['Competition']}\n"
                     f"🎯 *Picks:* `{r['Markets']}`\n"
@@ -460,4 +460,4 @@ if st.button("🚀 Run Quantitative Scan", type="primary"):
             st.markdown("### 📱 Telegram Payload")
             st.code(full_telegram_payload, language="text")
         else:
-            st.info("0 matches met the strict 85%+ Defensive Shield criteria.")
+            st.info("0 matches met the strict Defensive Shield criteria.")
