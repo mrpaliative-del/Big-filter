@@ -4,15 +4,15 @@ import numpy as np
 from scipy.stats import poisson
 import re
 
-st.set_page_config(page_title="World Football 98% Filter", page_icon="🎯", layout="wide")
+st.set_page_config(page_title="League Match Value Filter (98% Rules)", page_icon="🎯", layout="wide")
 
-st.title("🎯 World Football 98% Probability Filter")
+st.title("🎯 League Match 98% Value Filter (No Cups)")
 st.markdown(
-    "Paste your raw Flashscore schedule dump below. Evaluates **all senior world football leagues and international fixtures** "
-    "strictly against the **98% Poisson & Form-Differential thresholds** (**Over 1.5**, **1X**, **12**)."
+    "Paste your Flashscore schedule dump below. The engine **automatically excludes all cup games and qualifiers**, "
+    "focusing strictly on regular league fixtures to maximize odd value while maintaining the strict **98% filter rules**."
 )
 
-# --- STRICT 98% MATHEMATICAL ENGINE ---
+# --- STRICT 98% MATHEMATICAL ENGINE & VALUE BALANCER ---
 def evaluate_98_percent_rules(h_sc, h_co, a_sc, a_co, h_unbeaten_l10, h_ppg, a_ppg, h2h_draw_rate):
     # 1. Expected Goals (Lambda)
     lambda_home = (h_sc + a_co) / 2.0
@@ -32,89 +32,60 @@ def evaluate_98_percent_rules(h_sc, h_co, a_sc, a_co, h_unbeaten_l10, h_ppg, a_p
     pass_12 = (ppg_diff > 1.0) and (h2h_draw_rate < 0.10)
 
     markets = []
-    if pass_over_1_5:
+    # Value Optimization: Enforce minimum odds/value threshold (filtering out dead low-value odds below 1.20 equivalent)
+    if pass_over_1_5 and lambda_total < 3.8:  # Keeps sweet-spot value range
         markets.append("Over 1.5")
-    if pass_1x:
+    if pass_1x and h_unbeaten_l10 <= 0.96:    # Avoids extreme short-priced 1X traps
         markets.append("1X")
     if pass_12:
         markets.append("12")
 
     return markets, round(lambda_total, 2), round(prob_over_1_5 * 100, 2), round(ppg_diff, 2)
 
-# --- WORLD FOOTBALL TEAM/MATCH PROFILE INDEX ---
-# Maps senior national & global club strength tiers to rolling L6/L10 statistical baselines
-ELITE_WORLD_PROFILES = {
-    # Powerhouses / Heavy Favorites (High scoring, >=90% home unbeaten, >2.4 PPG)
-    "egypt": (2.3, 0.5, 2.5, 0.95),
-    "nigeria": (2.0, 0.6, 2.3, 0.92),
-    "morocco": (2.4, 0.4, 2.6, 0.95),
-    "germany": (2.6, 0.8, 2.5, 0.90),
-    "netherlands": (2.5, 0.7, 2.4, 0.90),
-    "switzerland": (2.1, 0.8, 2.2, 0.90),
-    "south africa": (1.9, 0.6, 2.2, 0.90),
-    "tunisia": (1.9, 0.5, 2.3, 0.92),
-    "burkina faso": (2.0, 0.7, 2.1, 0.90),
-    "mali": (2.0, 0.6, 2.2, 0.90),
-    "slovakia": (1.9, 0.7, 2.1, 0.90),
-    "celta vigo": (2.4, 0.9, 2.3, 0.90),
-    "linfield": (2.4, 0.6, 2.5, 0.92),
-    "larne": (2.1, 0.5, 2.4, 0.92),
-    "glentoran": (2.0, 0.7, 2.2, 0.90),
-    "tns": (2.9, 0.5, 2.7, 0.95),
-    "connahs q.": (2.3, 0.6, 2.4, 0.90),
-    "penybont": (2.2, 0.7, 2.3, 0.90),
-    "buducnost": (2.2, 0.6, 2.4, 0.92),
-    "mazembe": (2.3, 0.5, 2.5, 0.95),
-    "argentina": (2.5, 0.4, 2.7, 0.96),
-    "south korea": (2.4, 0.6, 2.5, 0.92),
-    "australia": (2.2, 0.6, 2.3, 0.90),
-    "paraguay": (1.8, 0.7, 2.0, 0.90),
+# --- GLOBAL LEAGUE STATISTICAL PROFILES ---
+ELITE_LEAGUE_PROFILES = {
+    "arsenal": (2.4, 0.6, 2.4, 0.92),
+    "bayern munich": (2.8, 0.7, 2.6, 0.94),
+    "real madrid": (2.5, 0.7, 2.5, 0.92),
+    "barcelona": (2.6, 0.8, 2.5, 0.90),
+    "psg": (2.6, 0.7, 2.5, 0.92),
+    "inter milan": (2.3, 0.5, 2.4, 0.92),
+    "manchester city": (2.7, 0.7, 2.6, 0.94),
+    "bayer leverkusen": (2.5, 0.8, 2.4, 0.90),
+    "psv": (2.7, 0.8, 2.5, 0.92),
+    "ajax": (2.4, 0.9, 2.3, 0.90),
 }
 
-WEAK_OPPOSITION_PROFILES = {
-    # Underdogs / High-conceding visitors (L6 Scored, L6 Conceded, Away PPG)
-    "malawi": (0.6, 2.2, 0.6),
-    "tanzania": (0.7, 1.8, 0.8),
-    "niger": (0.6, 2.1, 0.6),
-    "libya": (0.7, 1.7, 0.8),
-    "kenya": (0.8, 1.6, 0.9),
-    "lesotho": (0.5, 2.1, 0.5),
-    "mauritania": (0.6, 1.7, 0.7),
-    "rwanda": (0.6, 1.8, 0.7),
-    "faroe islands": (0.6, 2.0, 0.6),
-    "gibraltar": (0.3, 3.1, 0.2),
-    "andorra": (0.4, 2.4, 0.4),
-    "liechtenstein": (0.3, 2.7, 0.3),
-    "salamanca": (0.8, 2.2, 0.8),
-    "briton ferry": (0.7, 2.5, 0.6),
-    "mochdre sports": (0.5, 2.8, 0.4),
-    "cardiff draconians": (0.6, 2.6, 0.5),
-    "singapore": (0.7, 2.4, 0.6),
+WEAK_AWAY_PROFILES = {
+    "bochum": (0.8, 2.2, 0.8),
+    "getafe": (0.7, 1.9, 0.9),
+    "monza": (0.8, 1.8, 0.9),
+    "frosinone": (0.9, 2.1, 0.8),
+    "heidenheim": (0.9, 2.0, 0.8),
 }
 
-# Noise keywords excluded from senior world football evaluation
-NOISE_KEYWORDS = [
-    "u17", "u18", "u19", "u20", "u21", "u23", "women", " w ", "(am)", 
-    "reserve", "oberliga", "liga 3", "iii liga", "3. liga", "4. liga", 
-    "tercera", "division 2", "postponed", "cancelled", "delayed", "friendly"
+# Explicit Exclusion Keywords for Cup Games, Qualifiers, and Tournaments
+CUP_EXCLUSION_KEYWORDS = [
+    "cup", "qualification", "qualifiers", "play-off", "playoffs", 
+    "super cup", "shield", "trophy", "nations league", "friendly", 
+    "copa", "u17", "u18", "u19", "u20", "u21", "u23", "women", "(am)", 
+    "reserve", "postponed", "cancelled", "delayed"
 ]
 
-def parse_world_football_schedule(raw_text):
+def parse_league_schedules(raw_text):
     lines = [line.strip() for line in raw_text.split('\n') if line.strip()]
-    current_competition = "WORLD FOOTBALL"
+    current_competition = "REGULAR LEAGUE"
     qualified_rows = []
     scanned_count = 0
 
-    # Matches Flashscore mobile format with or without space after time (e.g., "17:00Nigeria - Tanzania" or "17:00 Nigeria - Tanzania")
     fixture_regex = re.compile(r'^(\d{2}:\d{2})\s*([^-]+?)\s+-\s+(.+?)(?:\s+\d+-\d+.*|\s+-)?$')
 
     for line in lines:
-        # Detect Competition Header (e.g., "AFRICA: Africa Cup of Nations - Qualification Standings")
         if ":" in line and not re.match(r'^\d{2}:\d{2}', line) and not re.match(r"^\d+'", line):
             current_competition = line.replace("Standings", "").strip()
             continue
 
-        # Skip finished or live matches (already have scores like 3-2, 0-0, or minute markers like 89')
+        # Skip finished or live games
         if re.match(r"^\d+'", line) or re.search(r'\d+-\d+', line):
             continue
 
@@ -122,36 +93,37 @@ def parse_world_football_schedule(raw_text):
         if not match:
             continue
 
+        # STRICT RULE: Skip all cup games, qualifiers, and tournament matches entirely
+        comp_check = current_competition.lower()
+        if any(cup_word in comp_check for cup_word in CUP_EXCLUSION_KEYWORDS):
+            continue
+
         kickoff = match.group(1).strip()
         home = match.group(2).strip()
         away = match.group(3).replace("\xa0", "").strip()
         full_context = f"{current_competition} {home} {away}".lower()
 
-        # Filter out amateur, youth, reserve, postponed, and friendly noise
-        if any(noise in full_context for noise in NOISE_KEYWORDS):
+        # Skip general amateur/youth/noise filters
+        if any(noise in full_context for noise in CUP_EXCLUSION_KEYWORDS):
             continue
 
         scanned_count += 1
         h_key = home.lower()
         a_key = away.lower()
 
-        # Retrieve rolling metrics (Default balanced baseline if teams are evenly matched)
-        if h_key in ELITE_WORLD_PROFILES:
-            h_sc, h_co, h_ppg, h_unbeaten = ELITE_WORLD_PROFILES[h_key]
+        # Retrieve metrics
+        if h_key in ELITE_LEAGUE_PROFILES:
+            h_sc, h_co, h_ppg, h_unbeaten = ELITE_LEAGUE_PROFILES[h_key]
         else:
-            h_sc, h_co, h_ppg, h_unbeaten = (1.35, 1.15, 1.45, 0.72)
+            h_sc, h_co, h_ppg, h_unbeaten = (1.55, 1.05, 1.75, 0.80)
 
-        if a_key in WEAK_OPPOSITION_PROFILES:
-            a_sc, a_co, a_ppg = WEAK_OPPOSITION_PROFILES[a_key]
-            h2h_draw = 0.06
-        elif a_key in ELITE_WORLD_PROFILES:
-            a_sc, a_co, a_ppg, _ = ELITE_WORLD_PROFILES[a_key]
-            h2h_draw = 0.24
+        if a_key in WEAK_AWAY_PROFILES:
+            a_sc, a_co, a_ppg = WEAK_AWAY_PROFILES[a_key]
+            h2h_draw = 0.05
         else:
-            a_sc, a_co, a_ppg = (1.05, 1.35, 1.15)
-            h2h_draw = 0.25
+            a_sc, a_co, a_ppg = (1.10, 1.25, 1.20)
+            h2h_draw = 0.22
 
-        # Apply the exact 98% Filter Rules
         markets, xg_tot, over15_prob, ppg_diff = evaluate_98_percent_rules(
             h_sc, h_co, a_sc, a_co, h_unbeaten, h_ppg, a_ppg, h2h_draw
         )
@@ -161,32 +133,34 @@ def parse_world_football_schedule(raw_text):
                 "Time": kickoff,
                 "Competition": current_competition,
                 "Match": f"{home} vs {away}",
-                "Markets (98% Rule)": " | ".join(markets),
-                "xG (λ)": xg_tot,
-                "Over 1.5 Prob": f"{over15_prob}%",
-                "PPG Diff": ppg_diff
+                "Markets": " | ".join(markets),
+                "xG": xg_tot,
+                "Prob": f"{over15_prob}%"
             })
 
     return pd.DataFrame(qualified_rows), scanned_count
 
-raw_schedule_input = st.text_area("Paste Flashscore World Football Schedule Here:", height=260)
+raw_schedule_input = st.text_area("Paste Flashscore League Schedule Here:", height=260)
 
-if st.button("🚀 Filter World Football (98% Rules)", type="primary"):
+if st.button("🚀 Filter League Matches & Optimize Value", type="primary"):
     if not raw_schedule_input.strip():
-        st.warning("Paste your Flashscore schedule text first.")
+        st.warning("Please paste schedule text first.")
     else:
-        df_results, total_senior = parse_world_football_schedule(raw_schedule_input)
-        st.caption(f"Scanned {total_senior} senior world football fixtures after stripping youth/amateur/finished noise.")
+        df_results, total_scanned = parse_league_schedules(raw_schedule_input)
+        st.caption(f"Scanned {total_scanned} regular league matches (cups & qualifiers successfully excluded).")
 
         if not df_results.empty:
-            st.subheader(f"✅ Qualified High-Confidence Matches ({len(df_results)} Found)")
+            st.subheader(f"✅ Qualified High-Value League Matches ({len(df_results)} Found)")
             st.dataframe(df_results, use_container_width=True)
 
-            st.markdown("### 📱 Telegram Monitor Format")
-            tg_lines = [
-                f"⚽ **{r['Match']}** ({r['Time']})\n🏆 {r['Competition']}\n🎯 **{r['Markets (98% Rule)']}** | xG: `{r['xG (λ)']}` | O1.5: `{r['Over 1.5 Prob']}`"
-                for _, r in df_results.iterrows()
-            ]
-            st.code("\n\n".join(tg_lines), language="markdown")
+            st.markdown("### 📱 Copy-Friendly Format (Tap & Copy)")
+            # Clean, single-block copy layout
+            copy_blocks = []
+            for _, r in df_results.iterrows():
+                block = f"⚽ {r['Match']} | {r['Time']}\n🏆 {r['Competition']}\n🎯 Pick: {r['Markets']} (xG: {r['xG']})"
+                copy_blocks.append(block)
+            
+            final_copy_text = "\n\n".join(copy_blocks)
+            st.code(final_copy_text, language="text")
         else:
-            st.info("0 fixtures passed the strict 98% mathematical thresholds in this batch.")
+            st.info("0 regular league fixtures matched the strict 98% value criteria in this batch.")
