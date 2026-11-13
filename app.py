@@ -15,41 +15,15 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("🎯 Big-Filter Pro: 98% League & Quantitative Engine")
+st.title("🎯 Big-Filter Pro: 98% Matchday & Quantitative Engine")
 st.markdown(
-    "Evaluates regular league fixtures using **Dixon-Coles Poisson**, **Recent"
+    "Scans all available matchday fixtures using **Dixon-Coles Poisson**, **Recent"
     " Form**, **H2H Historic Dominance**, **Psychological Friction**, **EV Edge"
     " Detection**, and **Fractional Kelly Staking**."
 )
 
 # --- CONFIGURATION & CONSTANTS ---
 CLV_LOG_PATH = "clv_execution_log.csv"
-
-CUP_EXCLUSION_KEYWORDS = [
-    "cup",
-    "qualification",
-    "qualifiers",
-    "play-off",
-    "playoffs",
-    "super cup",
-    "shield",
-    "trophy",
-    "nations league",
-    "friendly",
-    "copa",
-    "u17",
-    "u18",
-    "u19",
-    "u20",
-    "u21",
-    "u23",
-    "women",
-    "(am)",
-    "reserve",
-    "postponed",
-    "cancelled",
-    "delayed",
-]
 
 DERBY_KEYWORDS = [
     "derby",
@@ -90,7 +64,6 @@ def calculate_form_multiplier(recent_results: str) -> float:
     results = [r.strip().upper() for r in recent_results.split("-") if r.strip()]
     if not results:
         return 1.0
-    # Weight most recent 3 matches 1.2x heavier than older matches
     weighted_sum = 0.0
     total_weight = 0.0
     for idx, res in enumerate(reversed(results)):
@@ -123,7 +96,6 @@ def detect_psychological_context(
     context_str = f"{home_team} {away_team} {competition}".lower()
     is_derby = any(kw in context_str for kw in DERBY_KEYWORDS)
 
-    # Relegation/Title pressure urgency
     urgency_multiplier = 1.0
     if h_ppg >= 2.2 or a_ppg <= 0.9:
         urgency_multiplier = 1.04
@@ -317,7 +289,7 @@ def evaluate_fixture_quant(
         if 2 <= (x + y) <= 4
     )
 
-    # 3. Strict Threshold Qualification
+    # 3. Strict Threshold Qualification (Unchanged)
     pass_over_1_5 = (prob_over_1_5 >= 0.94) and (lambda_total >= 2.80)
     pass_1x = (h_unbeaten >= 0.88) and (prob_1x >= 0.92) and not is_derby
     ppg_diff = abs(h_ppg - a_ppg)
@@ -370,12 +342,13 @@ def parse_and_scan_schedules(
     raw_text: str, bankroll: float, kelly_mult: float, min_ev: float
 ) -> tuple:
     lines = [line.strip() for line in raw_text.split("\n") if line.strip()]
-    current_competition = "REGULAR LEAGUE"
+    current_competition = "MATCHDAY FIXTURE"
     qualified_rows = []
     scanned_count = 0
 
+    # Broadened regex: captures all matchday fixtures regardless of competition or status tag
     fixture_regex = re.compile(
-        r"^(\d{2}:\d{2})\s*([^-]+?)\s+-\s+(.+?)(?:\s+\d+-\d+.*|\s+-)?$"
+        r"^(\d{2}:\d{2}|[A-Za-z]{2,5})\s+([^-]+?)\s+-\s+(.+?)(?:\s+\d+\s*-\s*\d+.*|\s+-)?$"
     )
 
     for line in lines:
@@ -383,28 +356,22 @@ def parse_and_scan_schedules(
             ":" in line
             and not re.match(r"^\d{2}:\d{2}", line)
             and not re.match(r"^\d+'", line)
+            and " - " not in line
         ):
             current_competition = line.replace("Standings", "").strip()
             continue
 
-        if re.match(r"^\d+'", line) or re.search(r"\d+-\d+", line):
+        if re.match(r"^\d+'", line):
             continue
 
         match = fixture_regex.match(line)
         if not match:
             continue
 
-        comp_check = current_competition.lower()
-        if any(cup_word in comp_check for cup_word in CUP_EXCLUSION_KEYWORDS):
-            continue
-
         kickoff = match.group(1).strip()
         home = match.group(2).strip()
         away = match.group(3).replace("\xa0", "").strip()
-        full_context = f"{current_competition} {home} {away}".lower()
-
-        if any(noise in full_context for noise in CUP_EXCLUSION_KEYWORDS):
-            continue
+        away = re.sub(r"\s+\d+\.\d+.*$", "", away).strip()
 
         scanned_count += 1
         res = evaluate_fixture_quant(
@@ -466,7 +433,7 @@ if st.button("🚀 Run Quantitative Scan", type="primary"):
         df_results, total_scanned = parse_and_scan_schedules(
             raw_schedule_input, bankroll_input, kelly_fraction_input, min_ev_input
         )
-        st.caption(f"Scanned {total_scanned} regular league fixtures (cups/noise excluded).")
+        st.caption(f"Scanned {total_scanned} total matches across all competitions.")
 
         if not df_results.empty:
             st.subheader(f"✅ Qualified Value Signals ({len(df_results)} Found)")
@@ -497,4 +464,4 @@ if st.button("🚀 Run Quantitative Scan", type="primary"):
             st.markdown("### 📱 Telegram Payload")
             st.code(full_telegram_payload, language="text")
         else:
-            st.info("0 regular league fixtures met the Dixon-Coles + Positive EV criteria.")
+            st.info("0 matches met the strict Dixon-Coles + Positive EV criteria.")
