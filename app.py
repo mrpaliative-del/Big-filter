@@ -4,45 +4,61 @@ import numpy as np
 from scipy.stats import poisson
 import re
 
-st.set_page_config(page_title="League Match Value Filter (98% Rules)", page_icon="🎯", layout="wide")
+st.set_page_config(page_title="Extended 98% League Filter", page_icon="🎯", layout="wide")
 
-st.title("🎯 League Match 98% Value Filter (No Cups)")
+st.title("🎯 League Match 98% Filter & Extended Markets")
 st.markdown(
-    "Paste your Flashscore schedule dump below. The engine **automatically excludes all cup games and qualifiers**, "
-    "focusing strictly on regular league fixtures to maximize odd value while maintaining the strict **98% filter rules**."
+    "Paste your Flashscore schedule below. Automatically excludes cups and qualifiers, "
+    "evaluating regular league fixtures across core markets (**1X, 12, Over 1.5**) and extended value options (**Combos, Team Goals, Goal Ranges**)."
 )
 
-# --- STRICT 98% MATHEMATICAL ENGINE & VALUE BALANCER ---
-def evaluate_98_percent_rules(h_sc, h_co, a_sc, a_co, h_unbeaten_l10, h_ppg, a_ppg, h2h_draw_rate):
+# --- ADVANCED MATHEMATICAL ENGINE & EXTENDED MARKETS ---
+def evaluate_extended_markets(h_sc, h_co, a_sc, a_co, h_unbeaten_l10, h_ppg, a_ppg, h2h_draw_rate):
     # 1. Expected Goals (Lambda)
     lambda_home = (h_sc + a_co) / 2.0
     lambda_away = (a_sc + h_co) / 2.0
     lambda_total = lambda_home + lambda_away
 
-    # 2. Over 1.5 Goals Filter: P(Goals >= 2) >= 0.96 AND lambda_total >= 2.85
+    # 2. Over 1.5 Goals Filter
     prob_over_1_5 = 1.0 - (poisson.pmf(0, lambda_total) + poisson.pmf(1, lambda_total))
     pass_over_1_5 = (prob_over_1_5 >= 0.96) and (lambda_total >= 2.85)
 
-    # 3. 1X Filter: Home Unbeaten L10 >= 0.90 AND Home Superiority > -0.3 AND Home Scored >= 1.8
+    # 3. 1X Filter
     home_superiority = lambda_home - lambda_away
     pass_1x = (h_unbeaten_l10 >= 0.90) and (home_superiority > -0.3) and (h_sc >= 1.8)
 
-    # 4. 12 (No Draw) Filter: |Home PPG - Away PPG| > 1.0 AND H2H Draw Rate < 0.10
+    # 4. 12 (No Draw) Filter
     ppg_diff = abs(h_ppg - a_ppg)
     pass_12 = (ppg_diff > 1.0) and (h2h_draw_rate < 0.10)
 
+    # 5. Extended Market calculations
+    prob_home_over_1_5 = 1.0 - (poisson.pmf(0, lambda_home) + poisson.pmf(1, lambda_home))
+    pass_home_over_1_5 = prob_home_over_1_5 >= 0.65
+
+    prob_goal_range_2_4 = poisson.pmf(2, lambda_total) + poisson.pmf(3, lambda_total) + poisson.pmf(4, lambda_total)
+    pass_goal_range = prob_goal_range_2_4 >= 0.75
+
     markets = []
-    # Value Optimization: Enforce minimum odds/value threshold (filtering out dead low-value odds below 1.20 equivalent)
-    if pass_over_1_5 and lambda_total < 3.8:  # Keeps sweet-spot value range
+    
+    # Core Markets
+    if pass_over_1_5 and lambda_total < 3.8:
         markets.append("Over 1.5")
-    if pass_1x and h_unbeaten_l10 <= 0.96:    # Avoids extreme short-priced 1X traps
+    if pass_1x and h_unbeaten_l10 <= 0.96:
         markets.append("1X")
     if pass_12:
         markets.append("12")
+        
+    # Extended Markets
+    if pass_1x and pass_over_1_5:
+        markets.append("1X & Over 1.5 (Combo)")
+    if pass_home_over_1_5:
+        markets.append("Home Team Over 1.5")
+    if pass_goal_range:
+        markets.append("Goal Range: 2-4 Goals")
 
     return markets, round(lambda_total, 2), round(prob_over_1_5 * 100, 2), round(ppg_diff, 2)
 
-# --- GLOBAL LEAGUE STATISTICAL PROFILES ---
+# --- GLOBAL LEAGUE PROFILES ---
 ELITE_LEAGUE_PROFILES = {
     "arsenal": (2.4, 0.6, 2.4, 0.92),
     "bayern munich": (2.8, 0.7, 2.6, 0.94),
@@ -64,7 +80,6 @@ WEAK_AWAY_PROFILES = {
     "heidenheim": (0.9, 2.0, 0.8),
 }
 
-# Explicit Exclusion Keywords for Cup Games, Qualifiers, and Tournaments
 CUP_EXCLUSION_KEYWORDS = [
     "cup", "qualification", "qualifiers", "play-off", "playoffs", 
     "super cup", "shield", "trophy", "nations league", "friendly", 
@@ -72,7 +87,7 @@ CUP_EXCLUSION_KEYWORDS = [
     "reserve", "postponed", "cancelled", "delayed"
 ]
 
-def parse_league_schedules(raw_text):
+def parse_and_scan_schedules(raw_text):
     lines = [line.strip() for line in raw_text.split('\n') if line.strip()]
     current_competition = "REGULAR LEAGUE"
     qualified_rows = []
@@ -85,7 +100,6 @@ def parse_league_schedules(raw_text):
             current_competition = line.replace("Standings", "").strip()
             continue
 
-        # Skip finished or live games
         if re.match(r"^\d+'", line) or re.search(r'\d+-\d+', line):
             continue
 
@@ -93,7 +107,6 @@ def parse_league_schedules(raw_text):
         if not match:
             continue
 
-        # STRICT RULE: Skip all cup games, qualifiers, and tournament matches entirely
         comp_check = current_competition.lower()
         if any(cup_word in comp_check for cup_word in CUP_EXCLUSION_KEYWORDS):
             continue
@@ -103,7 +116,6 @@ def parse_league_schedules(raw_text):
         away = match.group(3).replace("\xa0", "").strip()
         full_context = f"{current_competition} {home} {away}".lower()
 
-        # Skip general amateur/youth/noise filters
         if any(noise in full_context for noise in CUP_EXCLUSION_KEYWORDS):
             continue
 
@@ -111,7 +123,6 @@ def parse_league_schedules(raw_text):
         h_key = home.lower()
         a_key = away.lower()
 
-        # Retrieve metrics
         if h_key in ELITE_LEAGUE_PROFILES:
             h_sc, h_co, h_ppg, h_unbeaten = ELITE_LEAGUE_PROFILES[h_key]
         else:
@@ -124,7 +135,7 @@ def parse_league_schedules(raw_text):
             a_sc, a_co, a_ppg = (1.10, 1.25, 1.20)
             h2h_draw = 0.22
 
-        markets, xg_tot, over15_prob, ppg_diff = evaluate_98_percent_rules(
+        markets, xg_tot, over15_prob, ppg_diff = evaluate_extended_markets(
             h_sc, h_co, a_sc, a_co, h_unbeaten, h_ppg, a_ppg, h2h_draw
         )
 
@@ -140,27 +151,24 @@ def parse_league_schedules(raw_text):
 
     return pd.DataFrame(qualified_rows), scanned_count
 
-raw_schedule_input = st.text_area("Paste Flashscore League Schedule Here:", height=260)
+raw_schedule_input = st.text_area("Paste Flashscore Schedule Here:", height=260)
 
-if st.button("🚀 Filter League Matches & Optimize Value", type="primary"):
+if st.button("🚀 Filter Extended Markets", type="primary"):
     if not raw_schedule_input.strip():
         st.warning("Please paste schedule text first.")
     else:
-        df_results, total_scanned = parse_league_schedules(raw_schedule_input)
-        st.caption(f"Scanned {total_scanned} regular league matches (cups & qualifiers successfully excluded).")
+        df_results, total_scanned = parse_and_scan_schedules(raw_schedule_input)
+        st.caption(f"Scanned {total_scanned} regular league matches (cups excluded).")
 
         if not df_results.empty:
-            st.subheader(f"✅ Qualified High-Value League Matches ({len(df_results)} Found)")
+            st.subheader(f"✅ Qualified Matches with Extended Markets ({len(df_results)} Found)")
             st.dataframe(df_results, use_container_width=True)
 
-            st.markdown("### 📱 Copy-Friendly Format (Tap & Copy)")
-            # Clean, single-block copy layout
-            copy_blocks = []
-            for _, r in df_results.iterrows():
-                block = f"⚽ {r['Match']} | {r['Time']}\n🏆 {r['Competition']}\n🎯 Pick: {r['Markets']} (xG: {r['xG']})"
-                copy_blocks.append(block)
-            
-            final_copy_text = "\n\n".join(copy_blocks)
-            st.code(final_copy_text, language="text")
+            st.markdown("### 📱 Telegram Copy Block")
+            copy_blocks = [
+                f"⚽ {r['Match']} | {r['Time']}\n🏆 {r['Competition']}\n🎯 Picks: {r['Markets']} (xG: {r['xG']})"
+                for _, r in df_results.iterrows()
+            ]
+            st.code("\n\n".join(copy_blocks), language="text")
         else:
-            st.info("0 regular league fixtures matched the strict 98% value criteria in this batch.")
+            st.info("0 regular league fixtures matched the strict criteria in this batch.")
