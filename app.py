@@ -289,7 +289,7 @@ def evaluate_fixture_quant(
         if 2 <= (x + y) <= 4
     )
 
-    # 3. Strict Threshold Qualification (Unchanged)
+    # 3. Strict Threshold Qualification
     pass_over_1_5 = (prob_over_1_5 >= 0.94) and (lambda_total >= 2.80)
     pass_1x = (h_unbeaten >= 0.88) and (prob_1x >= 0.92) and not is_derby
     ppg_diff = abs(h_ppg - a_ppg)
@@ -346,62 +346,61 @@ def parse_and_scan_schedules(
     qualified_rows = []
     scanned_count = 0
 
-    # Broadened regex: captures all matchday fixtures regardless of competition or status tag
-    fixture_regex = re.compile(
-        r"^(\d{2}:\d{2}|[A-Za-z]{2,5})\s+([^-]+?)\s+-\s+(.+?)(?:\s+\d+\s*-\s*\d+.*|\s+-)?$"
-    )
-
     for line in lines:
+        # Detect competition header lines (e.g., "AFRICA: Africa Cup of Nations - Qualification Standings")
         if (
-            ":" in line
-            and not re.match(r"^\d{2}:\d{2}", line)
-            and not re.match(r"^\d+'", line)
-            and " - " not in line
-        ):
+            ":" in line or "Standings" in line or "League" in line or "Cup" in line
+        ) and " - " not in line and not re.match(r"^\d{2}:\d{2}", line):
             current_competition = line.replace("Standings", "").strip()
             continue
 
-        if re.match(r"^\d+'", line):
-            continue
+        # Handle Flashscore mobile format where kickoff time is glued to home team (e.g., "14:00Comoros - Congo  - ")
+        time_match = re.match(r"^(\d{2}:\d{2})(.+)$", line)
+        if time_match:
+            kickoff = time_match.group(1).strip()
+            rest = time_match.group(2).strip()
 
-        match = fixture_regex.match(line)
-        if not match:
-            continue
+            if " - " in rest:
+                parts = rest.split(" - ", 1)
+                home = parts[0].strip()
+                away_raw = parts[1].strip()
 
-        kickoff = match.group(1).strip()
-        home = match.group(2).strip()
-        away = match.group(3).replace("\xa0", "").strip()
-        away = re.sub(r"\s+\d+\.\d+.*$", "", away).strip()
+                # Clean away team name by removing trailing scores/status/odds
+                away = re.sub(r"\s+(\d+-\d+.*|\(?Pen:.*\)|\s+-)$", "", away_raw).strip()
+                away = re.sub(r"\s+-\s*$", "", away).strip()
+                away = re.sub(r"\s+\d+\.\d+.*$", "", away).strip()
+                away = re.split(r"\s+\d+-\d+", away)[0].strip()
 
-        scanned_count += 1
-        res = evaluate_fixture_quant(
-            home, away, current_competition, bankroll, kelly_mult, min_ev
-        )
+                if home and away and home != "-" and away != "-":
+                    scanned_count += 1
+                    res = evaluate_fixture_quant(
+                        home, away, current_competition, bankroll, kelly_mult, min_ev
+                    )
 
-        if res:
-            match_label = f"{home} vs {away}"
-            log_signal_for_clv(
-                match_label,
-                current_competition,
-                res["primary_market"],
-                res["odds"],
-                res["dc_prob"] / 100.0,
-            )
-            qualified_rows.append(
-                {
-                    "Time": kickoff,
-                    "Competition": current_competition,
-                    "Match": match_label,
-                    "Markets": res["markets"],
-                    "xG": res["xg"],
-                    "DC Prob": f"{res['dc_prob']}%",
-                    "Odds": res["odds"],
-                    "EV Edge": f"+{res['ev_pct']}%",
-                    "Kelly %": f"{res['kelly_pct']}%",
-                    "Stake": res["stake"],
-                    "Derby": res["derby"],
-                }
-            )
+                    if res:
+                        match_label = f"{home} vs {away}"
+                        log_signal_for_clv(
+                            match_label,
+                            current_competition,
+                            res["primary_market"],
+                            res["odds"],
+                            res["dc_prob"] / 100.0,
+                        )
+                        qualified_rows.append(
+                            {
+                                "Time": kickoff,
+                                "Competition": current_competition,
+                                "Match": match_label,
+                                "Markets": res["markets"],
+                                "xG": res["xg"],
+                                "DC Prob": f"{res['dc_prob']}%",
+                                "Odds": res["odds"],
+                                "EV Edge": f"+{res['ev_pct']}%",
+                                "Kelly %": f"{res['kelly_pct']}%",
+                                "Stake": res["stake"],
+                                "Derby": res["derby"],
+                            }
+                        )
 
     return pd.DataFrame(qualified_rows), scanned_count
 
