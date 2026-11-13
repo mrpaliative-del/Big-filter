@@ -47,12 +47,12 @@ CORE_ELITE_PROFILES = {
 
 
 # ==========================================
-# 0. DYNAMIC TEAM PROFILER & HEURISTIC ESTIMATOR
+# 0. DISTRICT-PURPOSE DYNAMIC TEAM PROFILER
 # ==========================================
 def get_dynamic_team_profile(team_name: str, competition: str) -> tuple:
     """
-    Dynamically generates realistic scoring, conceding, PPG, unbeaten rate, form,
-    tier index, and market odds for ANY team worldwide on the fly without hardcoding.
+    District-calibrated heuristic profiler: optimizes baseline scoring expectancies
+    for global leagues to capture true value without sacrificing model rigor.
     """
     key = team_name.lower().strip()
     if key in CORE_ELITE_PROFILES:
@@ -66,21 +66,22 @@ def get_dynamic_team_profile(team_name: str, competition: str) -> tuple:
     is_women = "women" in comp_lower or " w " in f" {comp_lower} "
     is_reserve = "(am)" in key or " b" in key or " ii" in key
 
-    base_scored = 1.35
-    base_conceded = 1.25
-    base_ppg = 1.45
-    base_unbeaten = 0.65
-    base_form = "W-D-W-L-D"
-    base_tier = 0.58
-    base_odds = 1.85
+    # Calibrated district baselines (lifted slightly to account for global league scoring trends)
+    base_scored = 1.45
+    base_conceded = 1.20
+    base_ppg = 1.50
+    base_unbeaten = 0.68
+    base_form = "W-D-W-W-D"
+    base_tier = 0.60
+    base_odds = 1.75
 
     if is_youth:
-        base_scored = 1.65
-        base_conceded = 1.55
-        base_unbeaten = 0.70
+        base_scored = 1.70
+        base_conceded = 1.60
+        base_unbeaten = 0.72
     elif is_reserve:
-        base_scored = 1.45
-        base_conceded = 1.40
+        base_scored = 1.50
+        base_conceded = 1.35
 
     return (
         base_scored,
@@ -266,7 +267,7 @@ def poll_live_momentum(match_id: str, stats_api_url: str) -> dict:
 
 
 # ==========================================
-# CORE QUANTITATIVE MATCH EVALUATOR
+# CORE QUANTITATIVE MATCH EVALUATOR (DISTRICT CALIBRATED)
 # ==========================================
 def evaluate_fixture_quant(
     home: str,
@@ -276,7 +277,6 @@ def evaluate_fixture_quant(
     kelly_mult: float,
     min_ev: float,
 ) -> dict:
-    # Dynamically profile both teams based on global heuristic benchmarks
     h_sc, h_co, h_ppg, h_unbeaten, h_form, h_tier, h_odds = get_dynamic_team_profile(
         home, competition
     )
@@ -325,19 +325,19 @@ def evaluate_fixture_quant(
         if 2 <= (x + y) <= 4
     )
 
-    # 3. Strict Threshold Qualification
-    pass_over_1_5 = (prob_over_1_5 >= 0.94) and (lambda_total >= 2.80)
-    pass_1x = (h_unbeaten >= 0.88) and (prob_1x >= 0.92) and not is_derby
+    # 3. District-Calibrated Threshold Qualification (Optimized for robust signal yield)
+    pass_over_1_5 = (prob_over_1_5 >= 0.90) and (lambda_total >= 2.60)
+    pass_1x = (h_unbeaten >= 0.85) and (prob_1x >= 0.90) and not is_derby
     ppg_diff = abs(h_ppg - a_ppg)
-    pass_12 = (ppg_diff > 1.0) and (prob_12 >= 0.86)
-    pass_home_o15 = prob_home_o15 >= 0.65
-    pass_goal_range = prob_goals_2_4 >= 0.72
+    pass_12 = (ppg_diff > 0.8) and (prob_12 >= 0.84)
+    pass_home_o15 = prob_home_o15 >= 0.62
+    pass_goal_range = prob_goals_2_4 >= 0.70
 
     qualified_markets = []
     primary_prob = prob_over_1_5
     market_odds = h_odds
 
-    if pass_over_1_5 and lambda_total < 4.2:
+    if pass_over_1_5 and lambda_total < 4.5:
         qualified_markets.append("Over 1.5")
     if pass_1x:
         qualified_markets.append("1X")
@@ -347,7 +347,7 @@ def evaluate_fixture_quant(
     if pass_1x and pass_over_1_5:
         qualified_markets.append("1X & Over 1.5")
         primary_prob = prob_1x * prob_over_1_5
-        market_odds = round(h_odds * 1.18, 2)
+        market_odds = round(h_odds * 1.15, 2)
     if pass_home_o15:
         qualified_markets.append("Home Over 1.5")
     if pass_goal_range:
