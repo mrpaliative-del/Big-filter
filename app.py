@@ -353,7 +353,7 @@ def parse_and_scan_schedules(
             current_competition = line.replace("Standings", "").strip()
             continue
 
-        time_match = re.match(r"^(\d{2}:\d{2})(.+)$", line)
+        time_match = re.match(r"^(\d{2}:\d{2})(.*)$", line)
         if time_match:
             kickoff = time_match.group(1).strip()
             rest = time_match.group(2).strip()
