@@ -18,8 +18,8 @@ st.set_page_config(
 st.title("🎯 Big-Filter Pro: 98% Matchday & Quantitative Engine")
 st.markdown(
     "Scans all available matchday fixtures using **Dixon-Coles Poisson**, **Recent"
-    " Form**, **H2H Historic Dominance**, **Fail-Safe Global Engine**, **EV Edge"
-    " Detection**, and **Fractional Kelly Staking**."
+    " Form**, **H2H Historic Dominance**, **Rigorous Defensive Shield**, **EV"
+    " Edge Detection**, and **Fractional Kelly Staking**."
 )
 
 # --- CONFIGURATION & CONSTANTS ---
@@ -216,7 +216,7 @@ def update_clv_record(match_name: str, closing_odds: float) -> float:
 
 
 # ==========================================
-# CORE QUANTITATIVE MATCH EVALUATOR (FAIL-SAFE)
+# CORE QUANTITATIVE MATCH EVALUATOR (RIGOROUS)
 # ==========================================
 def evaluate_fixture_quant(
     home: str,
@@ -253,20 +253,27 @@ def evaluate_fixture_quant(
     prob_draw = float(np.sum(np.diag(dc_matrix)))
     prob_1x = prob_home_win + prob_draw
 
-    primary_prob = max(0.70, prob_1x)
-    market_odds = round(max(1.20, (1.0 / primary_prob) * 1.04), 2)
+    # --- STRICT QUANTITATIVE GATES ---
+    # Only pass matches meeting high statistical safety and defensive control
+    pass_shield = (prob_1x >= 0.78) and (lambda_total <= 2.85) and not is_derby
+    if not pass_shield:
+        return {}
 
-    quant_risk = calculate_ev_and_kelly(primary_prob, market_odds, bankroll, kelly_mult)
+    market_odds = round(max(1.20, (1.0 / prob_1x) * 1.03), 2)
+    quant_risk = calculate_ev_and_kelly(prob_1x, market_odds, bankroll, kelly_mult)
+
+    if quant_risk["ev_pct"] < min_ev:
+        return {}
 
     return {
-        "markets": "1X / Home Double Chance Shield",
+        "markets": "1X / Defensive Shield",
         "primary_market": "1X",
         "xg": round(lambda_total, 2),
-        "dc_prob": round(primary_prob * 100, 2),
+        "dc_prob": round(prob_1x * 100, 2),
         "odds": market_odds,
-        "ev_pct": max(2.0, quant_risk["ev_pct"]),
-        "kelly_pct": max(2.5, quant_risk["kelly_pct"]),
-        "stake": max(25.0, quant_risk["stake"]),
+        "ev_pct": quant_risk["ev_pct"],
+        "kelly_pct": quant_risk["kelly_pct"],
+        "stake": quant_risk["stake"],
         "derby": "Yes" if is_derby else "No",
     }
 
