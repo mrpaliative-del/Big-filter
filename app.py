@@ -18,7 +18,7 @@ st.set_page_config(
 st.title("🎯 Big-Filter Pro: 98% Matchday & Quantitative Engine")
 st.markdown(
     "Scans all available matchday fixtures using **Dixon-Coles Poisson**, **Recent"
-    " Form**, **H2H Historic Dominance**, **Calibrated Global Defensive Shield**, **EV Edge"
+    " Form**, **H2H Historic Dominance**, **Calibrated Global Shield**, **EV Edge"
     " Detection**, and **Fractional Kelly Staking**."
 )
 
@@ -57,7 +57,6 @@ def get_dynamic_team_profile(team_name: str, competition: str, is_home: bool) ->
     if key in CORE_ELITE_PROFILES:
         base = CORE_ELITE_PROFILES[key]
         scored, conceded, ppg, unbeaten, form, tier = base
-        # Apply home/away adjustments to elite benchmarks
         if is_home:
             return (scored * 1.08, conceded * 0.90, ppg * 1.10, max(0.85, unbeaten), form, tier)
         else:
@@ -221,32 +220,6 @@ def update_clv_record(match_name: str, closing_odds: float) -> float:
 
 
 # ==========================================
-# 5. IN-PLAY MOMENTUM & PRESSURE SCRAPER
-# ==========================================
-def poll_live_momentum(match_id: str, stats_api_url: str) -> dict:
-    if not stats_api_url:
-        return {"status": "unconfigured"}
-    try:
-        res = httpx.get(f"{stats_api_url.rstrip('/')}/matches/{match_id}/stats", timeout=6.0)
-        res.raise_for_status()
-        payload = res.json()
-        da_home = int(payload.get("dangerous_attacks", {}).get("home", 0))
-        da_away = int(payload.get("dangerous_attacks", {}).get("away", 0))
-        sot_home = int(payload.get("shots_on_target", {}).get("home", 0))
-        sot_away = int(payload.get("shots_on_target", {}).get("away", 0))
-
-        pressure_alert = (da_home >= 25 and sot_home >= 4) or (da_away >= 25 and sot_away >= 4)
-        return {
-            "status": "active",
-            "pressure_alert": pressure_alert,
-            "dangerous_attacks": f"{da_home}-{da_away}",
-            "shots_on_target": f"{sot_home}-{sot_away}",
-        }
-    except Exception as exc:
-        return {"status": "error", "detail": str(exc)}
-
-
-# ==========================================
 # CORE QUANTITATIVE MATCH EVALUATOR
 # ==========================================
 def evaluate_fixture_quant(
@@ -303,20 +276,18 @@ def evaluate_fixture_quant(
 
     # --- CALIBRATED GLOBAL DEFENSIVE SHIELD FILTER ---
     pass_fortress_shield = (
-        (prob_1x >= 0.75)
-        and (prob_home_ah_plus_15 >= 0.80)
-        and (prob_u25 >= 0.60)
-        and (lambda_total <= 2.70)
+        (prob_1x >= 0.70)
+        and (prob_home_ah_plus_15 >= 0.75)
+        and (lambda_total <= 3.20)
         and not is_derby
     )
 
     qualified_markets = []
-    primary_prob = prob_u25
-    market_odds = 1.30
+    primary_prob = prob_1x
+    market_odds = 1.35
 
     if pass_fortress_shield:
-        qualified_markets.append("1X / Home +1.5 AH / Under 2.5 Shield")
-        primary_prob = min(prob_1x, prob_home_ah_plus_15, prob_u25)
+        qualified_markets.append("1X / Home Double Chance Shield")
         market_odds = round(max(1.20, (1.0 / primary_prob) * 1.04), 2)
     else:
         return {}
