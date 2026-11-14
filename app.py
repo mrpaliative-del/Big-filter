@@ -10,7 +10,7 @@ import uvicorn
 app = FastAPI(
     title="Dixon-Coles Flashscore Scanner",
     description="Parser and probability ranking pipeline trained for Flashscore mobile fixtures.",
-    version="3.4.0",
+    version="3.5.0",
 )
 
 
@@ -30,13 +30,15 @@ def clean_and_parse_flashscore_fixtures(raw_text: str) -> dict:
             "fixtures": [],
         }
 
-    junk_keywords = [
+    # Comprehensive junk block keywords to ignore completely
+    skip_phrases = [
         "bet on football", "refresh now", "flashscore", "livescore",
         "basketball", "tennis", "ice hockey", "field hockey", "handball",
         "volleyball", "baseball", "am. football", "rugby union", "cricket",
         "more sports", "top", "m.flashscore", "provided live", "mobile version",
         "advertisement", "all games", "live", "finished", "odds", "draws",
-        "football |", "gamble responsibly", "copyright"
+        "football |", "gamble responsibly", "gambling therapy", "copyright",
+        "today | yesterday | tomorrow", "football » tomorrow"
     ]
 
     lines = raw_text.split("\n")
@@ -44,6 +46,7 @@ def clean_and_parse_flashscore_fixtures(raw_text: str) -> dict:
     structured_fixtures = []
     current_comp = "GLOBAL LEAGUES"
     leagues_set = set()
+    leagues_set.add(current_comp)
 
     for line in lines:
         line_str = line.strip()
@@ -51,18 +54,20 @@ def clean_and_parse_flashscore_fixtures(raw_text: str) -> dict:
             continue
 
         lower_line = line_str.lower()
-        if any(j in lower_line for j in junk_keywords) and not re.search(r"\d{2}:\d{2}", line_str):
+        
+        # Skip lines matching footer disclaimers or ads
+        if any(p in lower_line for p in skip_phrases):
             continue
 
-        # Detect Flashscore competition headers (e.g., "NIGERIA: NPFL Standings" or "AFRICA: Africa Cup...")
-        if ":" in line_str and " - " not in line_str and not re.search(r"^\d{2}:\d{2}", line_str):
+        # Detect competition headers (e.g., "NIGERIA: NPFL Standings")
+        if ":" in line_str and " - " not in line_str and not re.search(r"\d{2}:\d{2}", line_str):
             current_comp = line_str.replace("Standings", "").replace("Table", "").strip()
             leagues_set.add(current_comp)
             cleaned_schedule.append(f"\n--- {current_comp.upper()} ---")
             continue
 
-        # Catch lines without time or colon that act as headers
-        if ":" not in line_str[:5] and " - " not in line_str and len(line_str) > 3 and not re.search(r"\d+-\d+", line_str):
+        # Detect standalone competition header lines
+        if ":" not in line_str[:5] and " - " not in line_str and len(line_str) > 3 and not re.search(r"\d+-\d+", line_str) and not re.search(r"\d{2}:\d{2}", line_str):
             current_comp = line_str.replace("Standings", "").replace("Table", "").strip()
             leagues_set.add(current_comp)
             cleaned_schedule.append(f"\n--- {current_comp.upper()} ---")
@@ -71,7 +76,7 @@ def clean_and_parse_flashscore_fixtures(raw_text: str) -> dict:
         time_str = "00:00"
         match_part = line_str
 
-        # Flexible international time match (e.g., "16:00Enyimba - Ikorodu City" or "14:00Zambia U23...")
+        # Extract kickoff time (HH:MM)
         time_match = re.search(r"\b(\d{2}:\d{2})\b", line_str)
         if time_match:
             time_str = time_match.group(1)
@@ -88,7 +93,7 @@ def clean_and_parse_flashscore_fixtures(raw_text: str) -> dict:
             parts = match_part.split(" - ", 1)
             home_team = parts[0].strip()
             away_team = re.sub(r"\s*-\s*$", "", parts[1]).strip()
-            # Clean trailing scores if present (e.g., "Team A 1-0" -> strip scores)
+            # Clean trailing scores if present
             away_team = re.split(r"\s+\d+-\d+", away_team)[0].strip()
             away_team = re.sub(r"\s+\d+$", "", away_team).strip()
 
