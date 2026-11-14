@@ -10,7 +10,7 @@ import uvicorn
 app = FastAPI(
     title="Dixon-Coles Flashscore Scanner",
     description="Parser and probability ranking pipeline trained for Flashscore mobile fixtures.",
-    version="3.5.0",
+    version="3.6.0",
 )
 
 
@@ -30,7 +30,6 @@ def clean_and_parse_flashscore_fixtures(raw_text: str) -> dict:
             "fixtures": [],
         }
 
-    # Comprehensive junk block keywords to ignore completely
     skip_phrases = [
         "bet on football", "refresh now", "flashscore", "livescore",
         "basketball", "tennis", "ice hockey", "field hockey", "handball",
@@ -54,19 +53,16 @@ def clean_and_parse_flashscore_fixtures(raw_text: str) -> dict:
             continue
 
         lower_line = line_str.lower()
-        
-        # Skip lines matching footer disclaimers or ads
         if any(p in lower_line for p in skip_phrases):
             continue
 
-        # Detect competition headers (e.g., "NIGERIA: NPFL Standings")
+        # Detect competition headers (e.g., "NIGERIA: NPFL Standings" or "AFRICA: Africa Cup...")
         if ":" in line_str and " - " not in line_str and not re.search(r"\d{2}:\d{2}", line_str):
             current_comp = line_str.replace("Standings", "").replace("Table", "").strip()
             leagues_set.add(current_comp)
             cleaned_schedule.append(f"\n--- {current_comp.upper()} ---")
             continue
 
-        # Detect standalone competition header lines
         if ":" not in line_str[:5] and " - " not in line_str and len(line_str) > 3 and not re.search(r"\d+-\d+", line_str) and not re.search(r"\d{2}:\d{2}", line_str):
             current_comp = line_str.replace("Standings", "").replace("Table", "").strip()
             leagues_set.add(current_comp)
@@ -76,15 +72,19 @@ def clean_and_parse_flashscore_fixtures(raw_text: str) -> dict:
         time_str = "00:00"
         match_part = line_str
 
-        # Extract kickoff time (HH:MM)
-        time_match = re.search(r"\b(\d{2}:\d{2})\b", line_str)
+        # Robust extraction for times glued directly to team strings (e.g., "16:00Enyimba")
+        time_match = re.search(r"^(\d{2}:\d{2})", line_str)
         if time_match:
             time_str = time_match.group(1)
-            parts_after_time = line_str.split(time_str, 1)
-            if len(parts_after_time) > 1:
-                match_part = parts_after_time[1].strip()
+            match_part = line_str[len(time_str):].strip()
+        else:
+            time_match_embedded = re.search(r"\b(\d{2}:\d{2})\b", line_str)
+            if time_match_embedded:
+                time_str = time_match_embedded.group(1)
+                parts = line_str.split(time_str, 1)
+                match_part = parts[1].strip()
 
-        # Remove match status prefixes or live scores (e.g. "32'", "Postponed", live score "1-0")
+        # Remove match status prefixes or live scores
         match_part = re.sub(
             r"^(Postponed|Cancelled|\d+['\+]?)\s*", "", match_part, flags=re.IGNORECASE
         ).strip()
@@ -93,7 +93,6 @@ def clean_and_parse_flashscore_fixtures(raw_text: str) -> dict:
             parts = match_part.split(" - ", 1)
             home_team = parts[0].strip()
             away_team = re.sub(r"\s*-\s*$", "", parts[1]).strip()
-            # Clean trailing scores if present
             away_team = re.split(r"\s+\d+-\d+", away_team)[0].strip()
             away_team = re.sub(r"\s+\d+$", "", away_team).strip()
 
@@ -288,7 +287,7 @@ def mobile_ui():
 
 
 @app.post("/ui-scan", response_class=HTMLResponse)
-def mobile_ui_scan(raw_text: str = Form(...)):
+def mobile_ui_scan(raw_text: str = Form("")):
     res = run_pipeline(raw_text)
     s = res["summary"]
     copy_text = res["copyable_block"] or "No fixtures met the 20%-69%+ probability band."
