@@ -8,9 +8,9 @@ from pydantic import BaseModel
 import uvicorn
 
 app = FastAPI(
-    title="Dixon-Coles Ranked Fixture Scanner",
-    description="Universal fixture parsing and probability ranking pipeline.",
-    version="3.3.1",
+    title="Dixon-Coles Flashscore Scanner",
+    description="Parser and probability ranking pipeline trained for Flashscore mobile fixtures.",
+    version="3.4.0",
 )
 
 
@@ -21,7 +21,7 @@ class ScanRequest(BaseModel):
     max_xg: float = 3.25
 
 
-def clean_and_parse_all_fixtures(raw_text: str) -> dict:
+def clean_and_parse_flashscore_fixtures(raw_text: str) -> dict:
     if not raw_text or not raw_text.strip():
         return {
             "cleaned_text": "",
@@ -35,7 +35,8 @@ def clean_and_parse_all_fixtures(raw_text: str) -> dict:
         "basketball", "tennis", "ice hockey", "field hockey", "handball",
         "volleyball", "baseball", "am. football", "rugby union", "cricket",
         "more sports", "top", "m.flashscore", "provided live", "mobile version",
-        "standings", "table", "results", "fixtures", "odds", "draws"
+        "advertisement", "all games", "live", "finished", "odds", "draws",
+        "football |", "gamble responsibly", "copyright"
     ]
 
     lines = raw_text.split("\n")
@@ -43,7 +44,6 @@ def clean_and_parse_all_fixtures(raw_text: str) -> dict:
     structured_fixtures = []
     current_comp = "GLOBAL LEAGUES"
     leagues_set = set()
-    leagues_set.add(current_comp)
 
     for line in lines:
         line_str = line.strip()
@@ -51,14 +51,18 @@ def clean_and_parse_all_fixtures(raw_text: str) -> dict:
             continue
 
         lower_line = line_str.lower()
-        if any(j in lower_line for j in junk_keywords) and not (" - " in line_str and re.search(r"\d{2}:\d{2}", line_str)):
-            if " - " not in line_str and not re.search(r"\d{2}:\d{2}", line_str):
-                current_comp = line_str.replace("Standings", "").replace("Table", "").strip()
-                leagues_set.add(current_comp)
-                cleaned_schedule.append(f"\n--- {current_comp.upper()} ---")
+        if any(j in lower_line for j in junk_keywords) and not re.search(r"\d{2}:\d{2}", line_str):
             continue
 
-        if ":" not in line_str[:5] and " - " not in line_str and len(line_str) > 3:
+        # Detect Flashscore competition headers (e.g., "NIGERIA: NPFL Standings" or "AFRICA: Africa Cup...")
+        if ":" in line_str and " - " not in line_str and not re.search(r"^\d{2}:\d{2}", line_str):
+            current_comp = line_str.replace("Standings", "").replace("Table", "").strip()
+            leagues_set.add(current_comp)
+            cleaned_schedule.append(f"\n--- {current_comp.upper()} ---")
+            continue
+
+        # Catch lines without time or colon that act as headers
+        if ":" not in line_str[:5] and " - " not in line_str and len(line_str) > 3 and not re.search(r"\d+-\d+", line_str):
             current_comp = line_str.replace("Standings", "").replace("Table", "").strip()
             leagues_set.add(current_comp)
             cleaned_schedule.append(f"\n--- {current_comp.upper()} ---")
@@ -67,6 +71,7 @@ def clean_and_parse_all_fixtures(raw_text: str) -> dict:
         time_str = "00:00"
         match_part = line_str
 
+        # Flexible international time match (e.g., "16:00Enyimba - Ikorodu City" or "14:00Zambia U23...")
         time_match = re.search(r"\b(\d{2}:\d{2})\b", line_str)
         if time_match:
             time_str = time_match.group(1)
@@ -74,6 +79,7 @@ def clean_and_parse_all_fixtures(raw_text: str) -> dict:
             if len(parts_after_time) > 1:
                 match_part = parts_after_time[1].strip()
 
+        # Remove match status prefixes or live scores (e.g. "32'", "Postponed", live score "1-0")
         match_part = re.sub(
             r"^(Postponed|Cancelled|\d+['\+]?)\s*", "", match_part, flags=re.IGNORECASE
         ).strip()
@@ -82,6 +88,7 @@ def clean_and_parse_all_fixtures(raw_text: str) -> dict:
             parts = match_part.split(" - ", 1)
             home_team = parts[0].strip()
             away_team = re.sub(r"\s*-\s*$", "", parts[1]).strip()
+            # Clean trailing scores if present (e.g., "Team A 1-0" -> strip scores)
             away_team = re.split(r"\s+\d+-\d+", away_team)[0].strip()
             away_team = re.sub(r"\s+\d+$", "", away_team).strip()
 
@@ -170,7 +177,7 @@ def evaluate_triple_markets(dc_matrix: np.ndarray) -> dict:
 
 
 def run_pipeline(raw_text: str, threshold: float = 0.695, min_threshold: float = 0.20, max_xg: float = 3.25) -> dict:
-    cleaned_data = clean_and_parse_all_fixtures(raw_text)
+    cleaned_data = clean_and_parse_flashscore_fixtures(raw_text)
     scanned_results = []
     copyable_lines = []
 
@@ -253,21 +260,21 @@ def mobile_ui():
     <html>
     <head>
         <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>Ranked Dixon-Coles Scanner (20%-69%+)</title>
+        <title>Flashscore Dixon-Coles Scanner</title>
         <style>
             body { font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #f8fafc; padding: 16px; margin: 0; }
             .container { max-width: 720px; margin: auto; }
             h2 { font-size: 1.25rem; margin-bottom: 8px; color: #38bdf8; }
-            textarea { width: 100%; height: 180px; background: #1e293b; color: #f8fafc; border: 1px solid #334155; border-radius: 8px; padding: 10px; box-sizing: border-box; font-size: 14px; }
+            textarea { width: 100%; height: 200px; background: #1e293b; color: #f8fafc; border: 1px solid #334155; border-radius: 8px; padding: 10px; box-sizing: border-box; font-size: 13px; font-family: monospace; }
             button { width: 100%; padding: 12px; margin-top: 10px; background: #0284c7; color: white; border: none; border-radius: 8px; font-weight: bold; font-size: 16px; cursor: pointer; }
         </style>
     </head>
     <body>
         <div class="container">
-            <h2>Ranked Dixon-Coles Scanner (20% - 69%+)</h2>
+            <h2>Flashscore Mobile Fixture Scanner</h2>
             <form method="post" action="/ui-scan">
-                <textarea name="raw_text"></textarea>
-                <button type="submit">Run Pipeline</button>
+                <textarea name="raw_text" placeholder="Paste raw Flashscore mobile copy here..."></textarea>
+                <button type="submit">Run Flashscore Pipeline</button>
             </form>
         </div>
     </body>
@@ -287,13 +294,13 @@ def mobile_ui_scan(raw_text: str = Form(...)):
     <html>
     <head>
         <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>Ranked Results</title>
+        <title>Scan Results</title>
         <style>
             body {{ font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #f8fafc; padding: 16px; margin: 0; }}
             .container {{ max-width: 720px; margin: auto; }}
             h3 {{ color: #38bdf8; margin-top: 18px; margin-bottom: 6px; font-size: 1.05rem; }}
             .stats {{ display: flex; justify-content: space-between; background: #1e293b; padding: 12px; border-radius: 8px; font-weight: bold; font-size: 14px; border: 1px solid #334155; }}
-            pre {{ background: #1e293b; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13px; border: 1px solid #334155; white-space: pre-wrap; }}
+            pre {{ background: #1e293b; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13px; border: 1px solid #334155; white-space: pre-wrap; font-family: monospace; }}
             button {{ width: 100%; padding: 12px; margin-top: 8px; background: #10b981; color: white; border: none; border-radius: 8px; font-weight: bold; font-size: 15px; cursor: pointer; }}
             a {{ display: block; text-align: center; margin-top: 16px; color: #38bdf8; text-decoration: none; }}
         </style>
