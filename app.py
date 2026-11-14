@@ -18,7 +18,7 @@ st.set_page_config(
 st.title("🎯 Big-Filter Pro: 98% Matchday & Quantitative Engine")
 st.markdown(
     "Scans all available matchday fixtures using **Dixon-Coles Poisson**, **Recent"
-    " Form**, **H2H Historic Dominance**, **Defensive Shield & Under 2.5 Logic**, **EV Edge"
+    " Form**, **H2H Historic Dominance**, **Calibrated Global Defensive Shield**, **EV Edge"
     " Detection**, and **Fractional Kelly Staking**."
 )
 
@@ -301,12 +301,12 @@ def evaluate_fixture_quant(
         )
     )
 
-    # --- BALANCED DEFENSIVE FORTRESS & UNDER SHIELD FILTER (80%+ Target) ---
+    # --- CALIBRATED GLOBAL DEFENSIVE SHIELD FILTER ---
     pass_fortress_shield = (
-        (prob_1x >= 0.80)
-        and (prob_home_ah_plus_15 >= 0.85)
-        and (prob_u25 >= 0.80)
-        and (lambda_total <= 2.20)
+        (prob_1x >= 0.75)
+        and (prob_home_ah_plus_15 >= 0.80)
+        and (prob_u25 >= 0.60)
+        and (lambda_total <= 2.70)
         and not is_derby
     )
 
@@ -317,7 +317,7 @@ def evaluate_fixture_quant(
     if pass_fortress_shield:
         qualified_markets.append("1X / Home +1.5 AH / Under 2.5 Shield")
         primary_prob = min(prob_1x, prob_home_ah_plus_15, prob_u25)
-        market_odds = round(max(1.25, (1.0 / primary_prob) * 1.04), 2)
+        market_odds = round(max(1.20, (1.0 / primary_prob) * 1.04), 2)
     else:
         return {}
 
