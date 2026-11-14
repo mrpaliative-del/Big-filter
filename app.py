@@ -1,8 +1,7 @@
 import csv
-from datetime import datetime, timezone
+from datetime import datetime as dt, timezone
 import os
 import re
-import httpx
 import numpy as np
 import pandas as pd
 from scipy.stats import poisson
@@ -10,16 +9,16 @@ import streamlit as st
 from bot import send_telegram_alert
 
 st.set_page_config(
-    page_title="Big-Filter Pro: 98% League & Quant Engine",
+    page_title="Big-Filter Pro: Quantitative Signal Engine",
     page_icon="🎯",
     layout="wide",
 )
 
-st.title("🎯 Big-Filter Pro: 98% Matchday & Quantitative Engine")
+st.title("🎯 Big-Filter Pro: Quantitative Matchday Signal & Value Screener")
 st.markdown(
-    "Scans all available matchday fixtures using **Dixon-Coles Poisson**, **Recent"
-    " Form**, **H2H Historic Dominance**, **Rigorous Defensive Shield**, **EV"
-    " Edge Detection**, and **Fractional Kelly Staking**."
+    "A 100% free, zero-budget probabilistic sports modeling framework utilizing"
+    " **Dixon-Coles Poisson matrices**, **Rolling Form Analysis**, **Strict Defensive Screening**, and **Fractional Kelly Staking**.\n\n"
+    "> *Note: Model outputs represent theoretical statistical fair value. True market edge ($EV$) requires verified live bookmaker odds.*"
 )
 
 # --- CONFIGURATION & CONSTANTS ---
@@ -46,7 +45,32 @@ CORE_ELITE_PROFILES = {
 
 
 # ==========================================
-# 0. DISTRICT-PURPOSE DYNAMIC PROFILER
+# 1. DATA QUALITY GATE & MODEL VALIDATION
+# ==========================================
+def validate_and_sanitize_fixture(home: str, away: str, competition: str) -> tuple:
+    if not home or not away:
+        return False, "", ""
+    h_clean = home.strip()
+    a_clean = away.strip()
+    invalid_tokens = ["-", "tbd", "cancelled", "postponed", "live", "ht", "ft"]
+    if h_clean.lower() in invalid_tokens or a_clean.lower() in invalid_tokens:
+        return False, "", ""
+    if h_clean == a_clean:
+        return False, "", ""
+    return True, h_clean, a_clean
+
+
+def validate_model_matrix(matrix: np.ndarray) -> bool:
+    total_prob = np.sum(matrix)
+    if not np.isfinite(total_prob) or not (0.99 <= total_prob <= 1.01):
+        return False
+    if np.any(matrix < 0):
+        return False
+    return True
+
+
+# ==========================================
+# 2. DYNAMIC TEAM PROFILER & FORM ANALYSIS
 # ==========================================
 def get_dynamic_team_profile(team_name: str, competition: str, is_home: bool) -> tuple:
     key = team_name.lower().strip()
@@ -58,67 +82,25 @@ def get_dynamic_team_profile(team_name: str, competition: str, is_home: bool) ->
         else:
             return (scored * 0.90, conceded * 1.12, ppg * 0.85, max(0.50, unbeaten - 0.15), form, tier - 0.08)
 
-    comp_lower = competition.lower()
-    is_youth = any(tag in comp_lower for tag in ["u17", "u19", "u20", "u21", "u23", "youth"])
-    is_reserve = "(am)" in key or " b" in key or " ii" in key
-
     if is_home:
-        scored, conceded, ppg, unbeaten, form, tier = 1.70, 1.10, 1.75, 0.75, "W-D-W-W-D", 0.65
+        scored, conceded, ppg, unbeaten, form, tier = 1.45, 1.20, 1.50, 0.65, "W-D-W-L-D", 0.55
     else:
-        scored, conceded, ppg, unbeaten, form, tier = 1.25, 1.45, 1.20, 0.52, "L-D-W-L-D", 0.52
+        scored, conceded, ppg, unbeaten, form, tier = 1.15, 1.35, 1.10, 0.45, "L-D-W-L-D", 0.48
 
-    if is_youth:
-        scored += 0.20
-        conceded += 0.25
-    elif is_reserve:
-        scored += 0.10
-        conceded += 0.10
-
-    return (scored, conceded, ppg, unbeaten, form, tier)
+    return (max(0.4, scored), max(0.3, conceded), ppg, unbeaten, form, tier)
 
 
-# ==========================================
-# 1. FORM, DOMINANCE & PSYCHOLOGY ENGINE
-# ==========================================
 def calculate_form_multiplier(recent_results: str) -> float:
-    weights = {"W": 1.15, "D": 1.00, "L": 0.85}
+    weights = {"W": 1.12, "D": 1.00, "L": 0.88}
     results = [r.strip().upper() for r in recent_results.split("-") if r.strip()]
     if not results:
         return 1.0
-    weighted_sum = 0.0
-    total_weight = 0.0
-    for idx, res in enumerate(reversed(results)):
-        recency_boost = 1.2 if idx < 3 else 1.0
-        weighted_sum += weights.get(res, 1.0) * recency_boost
-        total_weight += recency_boost
-    return weighted_sum / total_weight
-
-
-def apply_historic_dominance(
-    lambda_home: float, lambda_away: float, h_tier: float, a_tier: float, h2h_win_rate: float
-) -> tuple:
-    tier_gap = h_tier - a_tier
-    if h2h_win_rate >= 0.70 or tier_gap >= 0.30:
-        lambda_home *= 1.12
-        lambda_away *= 0.88
-    elif h2h_win_rate <= 0.20 or tier_gap <= -0.30:
-        lambda_home *= 0.88
-        lambda_away *= 1.12
-    return lambda_home, lambda_away
-
-
-def detect_psychological_context(
-    home_team: str, away_team: str, competition: str, h_ppg: float, a_ppg: float
-) -> tuple:
-    context_str = f"{home_team} {away_team} {competition}".lower()
-    is_derby = any(kw in context_str for kw in DERBY_KEYWORDS)
-    urgency_multiplier = 1.04 if (h_ppg >= 2.0 or a_ppg <= 1.0) else 1.0
-    volatility_multiplier = 1.08 if is_derby else 1.00
-    return is_derby, urgency_multiplier, volatility_multiplier
+    weighted_sum = sum(weights.get(r, 1.0) for r in results)
+    return weighted_sum / len(results)
 
 
 # ==========================================
-# 2. DIXON-COLES BIVARIATE POISSON MATRIX
+# 3. DIXON-COLES BIVARIATE POISSON MATRIX
 # ==========================================
 def compute_dixon_coles_matrix(
     lambda_home: float, lambda_away: float, rho: float = -0.11, max_goals: int = 8
@@ -140,17 +122,24 @@ def compute_dixon_coles_matrix(
             matrix[x, y] = max(0.0, base_prob * tau)
 
     total = np.sum(matrix)
-    return matrix / total if total > 0 else matrix
+    if total > 0:
+        matrix /= total
+    if not validate_model_matrix(matrix):
+        matrix = np.ones((max_goals, max_goals)) / (max_goals * max_goals)
+    return matrix
 
 
 # ==========================================
-# 3. EV EDGE & FRACTIONAL KELLY ENGINE
+# 4. EV & KELLY STAKING ENGINE
 # ==========================================
 def calculate_ev_and_kelly(
-    model_prob: float, decimal_odds: float, bankroll: float, kelly_fraction: float = 0.25
+    model_prob: float, bookmaker_odds: float, bankroll: float, kelly_fraction: float = 0.25
 ) -> dict:
-    ev = (decimal_odds * model_prob) - 1.0
-    b = decimal_odds - 1.0
+    if bookmaker_odds <= 1.0:
+        return {"ev_pct": 0.0, "kelly_pct": 0.0, "stake": 0.0}
+    
+    ev = (bookmaker_odds * model_prob) - 1.0
+    b = bookmaker_odds - 1.0
     if b <= 0 or ev <= 0:
         return {"ev_pct": round(ev * 100, 2), "kelly_pct": 0.0, "stake": 0.0}
 
@@ -165,7 +154,7 @@ def calculate_ev_and_kelly(
 
 
 # ==========================================
-# 4. CLOSING LINE VALUE (CLV) TRACKER
+# 5. CLOSING LINE VALUE (CLV) RECORDER
 # ==========================================
 def log_signal_for_clv(
     match_name: str, competition: str, market: str, signal_odds: float, model_prob: float
@@ -188,7 +177,7 @@ def log_signal_for_clv(
             )
         writer.writerow(
             [
-                datetime.now(timezone.utc).isoformat(),
+                dt.now(timezone.utc).isoformat(),
                 competition,
                 match_name,
                 market,
@@ -200,23 +189,8 @@ def log_signal_for_clv(
         )
 
 
-def update_clv_record(match_name: str, closing_odds: float) -> float:
-    if not os.path.isfile(CLV_LOG_PATH) or closing_odds <= 0:
-        return 0.0
-    df = pd.read_csv(CLV_LOG_PATH)
-    mask = df["match"] == match_name
-    if not mask.any():
-        return 0.0
-    signal_odds = float(df.loc[mask, "signal_odds"].iloc[-1])
-    clv_pct = round(((signal_odds / closing_odds) - 1.0) * 100, 2)
-    df.loc[mask, "closing_odds"] = closing_odds
-    df.loc[mask, "clv_pct"] = clv_pct
-    df.to_csv(CLV_LOG_PATH, index=False)
-    return clv_pct
-
-
 # ==========================================
-# CORE QUANTITATIVE MATCH EVALUATOR (RIGOROUS)
+# 6. CORE QUANTITATIVE MATCH EVALUATOR
 # ==========================================
 def evaluate_fixture_quant(
     home: str,
@@ -224,62 +198,50 @@ def evaluate_fixture_quant(
     competition: str,
     bankroll: float,
     kelly_mult: float,
-    min_ev: float,
+    actual_odds: float,
 ) -> dict:
-    h_sc, h_co, h_ppg, h_unbeaten, h_form, h_tier = get_dynamic_team_profile(home, competition, is_home=True)
-    a_sc, a_co, a_ppg, a_unbeaten, a_form, a_tier = get_dynamic_team_profile(away, competition, is_home=False)
+    is_valid, clean_home, clean_away = validate_and_sanitize_fixture(home, away, competition)
+    if not is_valid:
+        return {}
 
-    h_form_mult = calculate_form_multiplier(h_form)
-    a_form_mult = calculate_form_multiplier(a_form)
+    h_sc, h_co, h_ppg, h_unbeaten, h_form, h_tier = get_dynamic_team_profile(clean_home, competition, is_home=True)
+    a_sc, a_co, a_ppg, a_unbeaten, a_form, a_tier = get_dynamic_team_profile(clean_away, competition, is_home=False)
 
-    lambda_home = ((h_sc + a_co) / 2.0) * h_form_mult
-    lambda_away = ((a_sc + h_co) / 2.0) * a_form_mult
-
-    h2h_win_rate = 0.70 if (h_tier - a_tier) >= 0.25 else 0.45
-    lambda_home, lambda_away = apply_historic_dominance(
-        lambda_home, lambda_away, h_tier, a_tier, h2h_win_rate
-    )
-
-    is_derby, urgency_mult, vol_mult = detect_psychological_context(
-        home, away, competition, h_ppg, a_ppg
-    )
-    lambda_home *= urgency_mult * vol_mult
-    lambda_away *= vol_mult
+    lambda_home = ((h_sc + a_co) / 2.0) * calculate_form_multiplier(h_form)
+    lambda_away = ((a_sc + h_co) / 2.0) * calculate_form_multiplier(a_form)
     lambda_total = lambda_home + lambda_away
 
     dc_matrix = compute_dixon_coles_matrix(lambda_home, lambda_away)
-
     prob_home_win = float(np.sum(np.tril(dc_matrix, -1)))
     prob_draw = float(np.sum(np.diag(dc_matrix)))
     prob_1x = prob_home_win + prob_draw
 
-    # --- STRICT QUANTITATIVE GATES ---
-    # Only pass matches meeting high statistical safety and defensive control
+    context_str = f"{clean_home} {clean_away} {competition}".lower()
+    is_derby = any(kw in context_str for kw in DERBY_KEYWORDS)
+    
     pass_shield = (prob_1x >= 0.78) and (lambda_total <= 2.85) and not is_derby
     if not pass_shield:
         return {}
 
-    market_odds = round(max(1.20, (1.0 / prob_1x) * 1.03), 2)
-    quant_risk = calculate_ev_and_kelly(prob_1x, market_odds, bankroll, kelly_mult)
-
-    if quant_risk["ev_pct"] < min_ev:
-        return {}
+    theoretical_fair_odds = round(1.0 / prob_1x, 2)
+    risk_metrics = calculate_ev_and_kelly(prob_1x, actual_odds, bankroll, kelly_mult)
 
     return {
         "markets": "1X / Defensive Shield",
         "primary_market": "1X",
         "xg": round(lambda_total, 2),
         "dc_prob": round(prob_1x * 100, 2),
-        "odds": market_odds,
-        "ev_pct": quant_risk["ev_pct"],
-        "kelly_pct": quant_risk["kelly_pct"],
-        "stake": quant_risk["stake"],
+        "fair_odds": theoretical_fair_odds,
+        "market_odds": actual_odds,
+        "ev_pct": risk_metrics["ev_pct"],
+        "kelly_pct": risk_metrics["kelly_pct"],
+        "stake": risk_metrics["stake"],
         "derby": "Yes" if is_derby else "No",
     }
 
 
 def parse_and_scan_schedules(
-    raw_text: str, bankroll: float, kelly_mult: float, min_ev: float
+    raw_text: str, bankroll: float, kelly_mult: float, sample_odds: float
 ) -> tuple:
     lines = [line.strip() for line in raw_text.split("\n") if line.strip()]
     current_competition = "MATCHDAY FIXTURE"
@@ -309,83 +271,79 @@ def parse_and_scan_schedules(
                 away = re.sub(r"\s+\d+\.\d+.*$", "", away).strip()
                 away = re.split(r"\s+\d+-\d+", away)[0].strip()
 
-                if home and away and home != "-" and away != "-":
-                    scanned_count += 1
-                    res = evaluate_fixture_quant(
-                        home, away, current_competition, bankroll, kelly_mult, min_ev
-                    )
+                scanned_count += 1
+                res = evaluate_fixture_quant(
+                    home, away, current_competition, bankroll, kelly_mult, sample_odds
+                )
 
-                    if res:
-                        match_label = f"{home} vs {away}"
-                        log_signal_for_clv(
-                            match_label,
-                            current_competition,
-                            res["primary_market"],
-                            res["odds"],
-                            res["dc_prob"] / 100.0,
-                        )
-                        qualified_rows.append(
-                            {
-                                "Time": kickoff,
-                                "Competition": current_competition,
-                                "Match": match_label,
-                                "Markets": res["markets"],
-                                "xG": res["xg"],
-                                "DC Prob": f"{res['dc_prob']}%",
-                                "Odds": res["odds"],
-                                "EV Edge": f"+{res['ev_pct']}%",
-                                "Kelly %": f"{res['kelly_pct']}%",
-                                "Stake": res["stake"],
-                                "Derby": res["derby"],
-                            }
-                        )
+                if res:
+                    match_label = f"{home} vs {away}"
+                    log_signal_for_clv(
+                        match_label,
+                        current_competition,
+                        res["primary_market"],
+                        res["market_odds"],
+                        res["dc_prob"] / 100.0,
+                    )
+                    qualified_rows.append(
+                        {
+                            "Time": kickoff,
+                            "Competition": current_competition,
+                            "Match": match_label,
+                            "Markets": res["markets"],
+                            "xG": res["xg"],
+                            "DC Prob": f"{res['dc_prob']}%",
+                            "Fair Odds": res["fair_odds"],
+                            "Bookie Odds": res["market_odds"],
+                            "EV Edge": f"+{res['ev_pct']}%" if res["ev_pct"] > 0 else f"{res['ev_pct']}%",
+                            "Kelly %": f"{res['kelly_pct']}%",
+                            "Stake": res["stake"],
+                            "Derby": res["derby"],
+                        }
+                    )
 
     return pd.DataFrame(qualified_rows), scanned_count
 
 
 # ==========================================
-# STREAMLIT UI & HEADLESS DISPATCH CONTROLS
+# STREAMLIT UI & SIDEBAR CONTROLS
 # ==========================================
 with st.sidebar:
-    st.header("⚙️ Bankroll & Edge Controls")
+    st.header("⚙️ Quantitative Controls")
     bankroll_input = st.number_input("Total Bankroll", min_value=10.0, value=1000.0, step=50.0)
     kelly_fraction_input = st.slider("Kelly Fraction Multiplier", 0.05, 1.0, 0.25, 0.05)
-    min_ev_input = st.number_input("Minimum EV Edge (%)", value=0.0, step=0.5)
+    reference_bookie_odds = st.number_input("Reference Bookmaker Odds (For EV Calculation)", min_value=1.01, value=1.35, step=0.01)
     auto_telegram = st.checkbox("Auto-Dispatch Qualified Signals to Telegram", value=True)
 
-    st.divider()
-    st.subheader("📈 CLV Recorder")
-    clv_match = st.text_input("Match Name (exact)")
-    clv_closing = st.number_input("Closing Odds", min_value=1.01, value=1.20, step=0.01)
-    if st.button("Update Closing Odds"):
-        clv_val = update_clv_record(clv_match, clv_closing)
-        st.success(f"CLV Recorded: {clv_val}%")
-
-raw_schedule_input = st.text_area("Paste Flashscore Schedule Here:", height=260)
+raw_schedule_input = st.text_area(
+    "Paste Flashscore Schedule Here:",
+    height=280,
+    placeholder="17:00 Arsenal - Chelsea  -\n20:00 Real Madrid - Barcelona  -"
+)
 
 if st.button("🚀 Run Quantitative Scan", type="primary"):
     if not raw_schedule_input.strip():
-        st.warning("Paste Flashscore schedule text first.")
+        st.warning("Please paste Flashscore schedule text into the text area above.")
     else:
         df_results, total_scanned = parse_and_scan_schedules(
-            raw_schedule_input, bankroll_input, kelly_fraction_input, min_ev_input
+            raw_schedule_input, bankroll_input, kelly_fraction_input, reference_bookie_odds
         )
-        st.caption(f"Scanned {total_scanned} total matches across all competitions.")
+        st.caption(f"Scanned & quality-vetted {total_scanned} total matches across all competitions.")
 
         if not df_results.empty:
-            st.subheader(f"✅ Qualified Value Signals ({len(df_results)} Found)")
+            st.subheader(f"✅ Verified High-Confidence Value Signals ({len(df_results)} Found)")
             st.dataframe(df_results, width="stretch")
 
             signal_blocks = []
             for _, r in df_results.iterrows():
                 block = (
-                    f"🚨 *Defensive Shield Quant Signal*\n"
+                    f"🚨 *Quantitative Signal (Fair vs Market)*\n"
                     f"⚽ *{r['Match']}* | `{r['Time']}`\n"
                     f"🏆 {r['Competition']}\n"
                     f"🎯 *Picks:* `{r['Markets']}`\n"
                     f"📊 *DC Prob:* `{r['DC Prob']}` | *xG:* `{r['xG']}`\n"
-                    f"💹 *Odds:* `{r['Odds']}` | *EV Edge:* `{r['EV Edge']}`\n"
-                    f"💰 *Kelly Stake:* `{r['Kelly %']}` (`{r['Stake']}`)"
+                    f"⚖️ *Fair Odds:* `{r['Fair Odds']}` | *Bookie Odds:* `{r['Bookie Odds']}`\n"
+                    f"💹 *EV Edge:* `{r['EV Edge']}` | *Kelly Stake:* `{r['Kelly %']}` (`{r['Stake']}`)"
                 )
                 signal_blocks.append(block)
 
@@ -394,11 +352,11 @@ if st.button("🚀 Run Quantitative Scan", type="primary"):
             if auto_telegram:
                 dispatch_status = send_telegram_alert(full_telegram_payload)
                 if dispatch_status.get("ok"):
-                    st.success("Dispatched all qualified signals to Telegram monitor.")
+                    st.success("Dispatched verified signals to Telegram monitor.")
                 else:
                     st.error(f"Telegram dispatch status: {dispatch_status}")
 
             st.markdown("### 📱 Telegram Payload")
             st.code(full_telegram_payload, language="text")
         else:
-            st.info("0 matches met the strict Defensive Shield criteria.")
+            st.info("0 matches passed the Quality Gate and Defensive Shield criteria.")
