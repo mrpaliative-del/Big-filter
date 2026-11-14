@@ -1,107 +1,119 @@
-import csv
-from datetime import datetime as dt, timezone
-import os
 import re
 import numpy as np
-import pandas as pd
 from scipy.stats import poisson
-import streamlit as st
-from bot import send_telegram_alert
+from fastapi import FastAPI, Form
+from fastapi.responses import HTMLResponse, JSONResponse
+from pydantic import BaseModel
+import uvicorn
 
-st.set_page_config(
-    page_title="Big-Filter Pro: Quantitative Signal Engine",
-    page_icon="🎯",
-    layout="wide",
+app = FastAPI(
+    title="Dixon-Coles Ranked Fixture Scanner",
+    description="Universal fixture parsing and probability ranking pipeline (20% - 69%+ band).",
+    version="3.3.0",
 )
 
-st.title("🎯 Big-Filter Pro: Quantitative Matchday Signal & Value Screener")
-st.markdown(
-    "A 100% free, zero-budget probabilistic sports modeling framework utilizing"
-    " **Dixon-Coles Poisson matrices**, **Rolling Form Analysis**, **Strict Defensive Screening**, and **Fractional Kelly Staking**.\n\n"
-    "> *Note: Model outputs represent theoretical statistical fair value. True market edge ($EV$) requires verified live bookmaker odds.*"
-)
 
-# --- CONFIGURATION & CONSTANTS ---
-CLV_LOG_PATH = "clv_execution_log.csv"
-
-DERBY_KEYWORDS = [
-    "derby",
-    "clasico",
-    "klassiker",
-    "superclasico",
-    "madrileño",
-    "della madonnina",
-    "nordderby",
-    "old firm",
-]
-
-CORE_ELITE_PROFILES = {
-    "arsenal": (2.4, 0.6, 2.4, 0.92, "W-W-W-D-W", 0.88),
-    "real madrid": (2.5, 0.7, 2.5, 0.92, "W-D-W-W-W", 0.93),
-    "bayern munich": (2.8, 0.7, 2.6, 0.94, "W-W-W-W-D", 0.94),
-    "manchester city": (2.7, 0.7, 2.6, 0.94, "W-W-W-D-W", 0.92),
-    "psg": (2.6, 0.7, 2.5, 0.92, "W-W-W-W-W", 0.90),
-}
+class ScanRequest(BaseModel):
+    raw_text: str
+    threshold: float = 0.695
+    min_threshold: float = 0.20
+    max_xg: float = 3.25
 
 
-# ==========================================
-# 1. DATA QUALITY GATE & MODEL VALIDATION
-# ==========================================
-def validate_and_sanitize_fixture(home: str, away: str, competition: str) -> tuple:
-    if not home or not away:
-        return False, "", ""
-    h_clean = home.strip()
-    a_clean = away.strip()
-    invalid_tokens = ["-", "tbd", "cancelled", "postponed", "live", "ht", "ft"]
-    if h_clean.lower() in invalid_tokens or a_clean.lower() in invalid_tokens:
-        return False, "", ""
-    if h_clean == a_clean:
-        return False, "", ""
-    return True, h_clean, a_clean
+def clean_and_parse_all_fixtures(raw_text: str) -> dict:
+    if not raw_text or not raw_text.strip():
+        return {
+            "cleaned_text": "",
+            "leagues_count": 0,
+            "fixtures_count": 0,
+            "fixtures": [],
+        }
+
+    junk_keywords = [
+        "bet on football", "refresh now", "flashscore", "livescore",
+        "basketball", "tennis", "ice hockey", "field hockey", "handball",
+        "volleyball", "baseball", "am. football", "rugby union", "cricket",
+        "more sports", "top", "m.flashscore", "provided live", "mobile version",
+        "standings", "table", "results", "fixtures", "odds", "draws"
+    ]
+
+    lines = raw_text.split("\n")
+    cleaned_schedule = []
+    structured_fixtures = []
+    current_comp = "GLOBAL LEAGUES"
+    leagues_set = set()
+    leagues_set.add(current_comp)
+
+    for line in lines:
+        line_str = line.strip()
+        if not line_str:
+            continue
+
+        lower_line = line_str.lower()
+        if any(j in lower_line for j in junk_keywords) and not (" - " in line_str and re.search(r"\d{2}:\d{2}", line_str)):
+            if " - " not in line_str and not re.search(r"\d{2}:\d{2}", line_str):
+                current_comp = line_str.replace("Standings", "").replace("Table", "").strip()
+                leagues_set.add(current_comp)
+                cleaned_schedule.append(f"\n--- {current_comp.upper()} ---")
+            continue
+
+        if ":" not in line_str[:5] and " - " not in line_str and len(line_str) > 3:
+            current_comp = line_str.replace("Standings", "").replace("Table", "").strip()
+            leagues_set.add(current_comp)
+            cleaned_schedule.append(f"\n--- {current_comp.upper()} ---")
+            continue
+
+        time_str = "00:00"
+        match_part = line_str
+
+        time_match = re.search(r"\b(\d{2}:\d{2})\b", line_str)
+        if time_match:
+            time_str = time_match.group(1)
+            parts_after_time = line_str.split(time_str, 1)
+            if len(parts_after_time) > 1:
+                match_part = parts_after_time[1].strip()
+
+        match_part = re.sub(
+            r"^(Postponed|Cancelled|\d+['\+]?)\s*", "", match_part, flags=re.IGNORECASE
+        ).strip()
+
+        if " - " in match_part:
+            parts = match_part.split(" - ", 1)
+            home_team = parts[0].strip()
+            away_team = re.sub(r"\s*-\s*$", "", parts[1]).strip()
+            away_team = re.split(r"\s+\d+-\d+", away_team)[0].strip()
+            away_team = re.sub(r"\s+\d+$", "", away_team).strip()
+
+            if home_team and away_team and home_team.lower() != away_team.lower():
+                cleaned_line = f"{time_str} | {home_team} vs {away_team}"
+                cleaned_schedule.append(cleaned_line)
+                structured_fixtures.append(
+                    {
+                        "time": time_str,
+                        "competition": current_comp.upper(),
+                        "home": home_team,
+                        "away": away_team,
+                    }
+                )
+
+    return {
+        "cleaned_text": "\n".join(cleaned_schedule).strip(),
+        "leagues_count": len(leagues_set),
+        "fixtures_count": len(structured_fixtures),
+        "fixtures": structured_fixtures,
+    }
 
 
-def validate_model_matrix(matrix: np.ndarray) -> bool:
-    total_prob = np.sum(matrix)
-    if not np.isfinite(total_prob) or not (0.99 <= total_prob <= 1.01):
-        return False
-    if np.any(matrix < 0):
-        return False
-    return True
+def derive_team_parameters(is_home: bool) -> tuple[float, float]:
+    base_scored = 1.35
+    base_conceded = 1.35
+    venue_mult_scored = 1.08 if is_home else 0.92
+    venue_mult_conceded = 0.90 if is_home else 1.12
+    scored = max(0.5, base_scored * venue_mult_scored)
+    conceded = max(0.3, base_conceded * venue_mult_conceded)
+    return scored, conceded
 
 
-# ==========================================
-# 2. DYNAMIC TEAM PROFILER & FORM ANALYSIS
-# ==========================================
-def get_dynamic_team_profile(team_name: str, competition: str, is_home: bool) -> tuple:
-    key = team_name.lower().strip()
-    if key in CORE_ELITE_PROFILES:
-        base = CORE_ELITE_PROFILES[key]
-        scored, conceded, ppg, unbeaten, form, tier = base
-        if is_home:
-            return (scored * 1.08, conceded * 0.90, ppg * 1.10, max(0.85, unbeaten), form, tier)
-        else:
-            return (scored * 0.90, conceded * 1.12, ppg * 0.85, max(0.50, unbeaten - 0.15), form, tier - 0.08)
-
-    if is_home:
-        scored, conceded, ppg, unbeaten, form, tier = 1.45, 1.20, 1.50, 0.65, "W-D-W-L-D", 0.55
-    else:
-        scored, conceded, ppg, unbeaten, form, tier = 1.15, 1.35, 1.10, 0.45, "L-D-W-L-D", 0.48
-
-    return (max(0.4, scored), max(0.3, conceded), ppg, unbeaten, form, tier)
-
-
-def calculate_form_multiplier(recent_results: str) -> float:
-    weights = {"W": 1.12, "D": 1.00, "L": 0.88}
-    results = [r.strip().upper() for r in recent_results.split("-") if r.strip()]
-    if not results:
-        return 1.0
-    weighted_sum = sum(weights.get(r, 1.0) for r in results)
-    return weighted_sum / len(results)
-
-
-# ==========================================
-# 3. DIXON-COLES BIVARIATE POISSON MATRIX
-# ==========================================
 def compute_dixon_coles_matrix(
     lambda_home: float, lambda_away: float, rho: float = -0.11, max_goals: int = 8
 ) -> np.ndarray:
@@ -124,239 +136,189 @@ def compute_dixon_coles_matrix(
     total = np.sum(matrix)
     if total > 0:
         matrix /= total
-    if not validate_model_matrix(matrix):
+    else:
         matrix = np.ones((max_goals, max_goals)) / (max_goals * max_goals)
+
     return matrix
 
 
-# ==========================================
-# 4. EV & KELLY STAKING ENGINE
-# ==========================================
-def calculate_ev_and_kelly(
-    model_prob: float, bookmaker_odds: float, bankroll: float, kelly_fraction: float = 0.25
-) -> dict:
-    if bookmaker_odds <= 1.0:
-        return {"ev_pct": 0.0, "kelly_pct": 0.0, "stake": 0.0}
-    
-    ev = (bookmaker_odds * model_prob) - 1.0
-    b = bookmaker_odds - 1.0
-    if b <= 0 or ev <= 0:
-        return {"ev_pct": round(ev * 100, 2), "kelly_pct": 0.0, "stake": 0.0}
+def evaluate_triple_markets(dc_matrix: np.ndarray) -> dict:
+    max_goals = dc_matrix.shape[0]
+    prob_1x = 0.0
+    prob_home_plus_1_5 = 0.0
+    prob_under_2_5 = 0.0
 
-    q = 1.0 - model_prob
-    raw_kelly = ((b * model_prob) - q) / b
-    adj_kelly = max(0.0, raw_kelly * kelly_fraction)
+    for x in range(max_goals):
+        for y in range(max_goals):
+            p = dc_matrix[x, y]
+            if x >= y:
+                prob_1x += p
+            if (y - x) <= 1:
+                prob_home_plus_1_5 += p
+            if (x + y) <= 2:
+                prob_under_2_5 += p
+
+    min_prob = min(prob_1x, prob_home_plus_1_5, prob_under_2_5)
+
     return {
-        "ev_pct": round(ev * 100, 2),
-        "kelly_pct": round(adj_kelly * 100, 2),
-        "stake": round(bankroll * adj_kelly, 2),
+        "min_prob": min_prob,
+        "1x_prob": round(prob_1x * 100, 2),
+        "home_plus_1_5_prob": round(prob_home_plus_1_5 * 100, 2),
+        "under_2_5_prob": round(prob_under_2_5 * 100, 2),
     }
 
 
-# ==========================================
-# 5. CLOSING LINE VALUE (CLV) RECORDER
-# ==========================================
-def log_signal_for_clv(
-    match_name: str, competition: str, market: str, signal_odds: float, model_prob: float
-):
-    file_exists = os.path.isfile(CLV_LOG_PATH)
-    with open(CLV_LOG_PATH, mode="a", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        if not file_exists:
-            writer.writerow(
-                [
-                    "timestamp",
-                    "competition",
-                    "match",
-                    "market",
-                    "signal_odds",
-                    "model_prob_pct",
-                    "closing_odds",
-                    "clv_pct",
-                ]
-            )
-        writer.writerow(
-            [
-                dt.now(timezone.utc).isoformat(),
-                competition,
-                match_name,
-                market,
-                signal_odds,
-                round(model_prob * 100, 2),
-                "",
-                "",
-            ]
-        )
+def run_pipeline(raw_text: str, threshold: float = 0.695, min_threshold: float = 0.20, max_xg: float = 3.25) -> dict:
+    cleaned_data = clean_and_parse_all_fixtures(raw_text)
+    scanned_results = []
+    copyable_lines = []
 
+    for item in cleaned_data["fixtures"]:
+        h_sc, h_co = derive_team_parameters(is_home=True)
+        a_sc, a_co = derive_team_parameters(is_home=False)
 
-# ==========================================
-# 6. CORE QUANTITATIVE MATCH EVALUATOR
-# ==========================================
-def evaluate_fixture_quant(
-    home: str,
-    away: str,
-    competition: str,
-    bankroll: float,
-    kelly_mult: float,
-    actual_odds: float,
-) -> dict:
-    is_valid, clean_home, clean_away = validate_and_sanitize_fixture(home, away, competition)
-    if not is_valid:
-        return {}
+        lambda_home = (h_sc + a_co) / 2.0
+        lambda_away = (a_sc + h_co) / 2.0
+        lambda_total = lambda_home + lambda_away
 
-    h_sc, h_co, h_ppg, h_unbeaten, h_form, h_tier = get_dynamic_team_profile(clean_home, competition, is_home=True)
-    a_sc, a_co, a_ppg, a_unbeaten, a_form, a_tier = get_dynamic_team_profile(clean_away, competition, is_home=False)
-
-    lambda_home = ((h_sc + a_co) / 2.0) * calculate_form_multiplier(h_form)
-    lambda_away = ((a_sc + h_co) / 2.0) * calculate_form_multiplier(a_form)
-    lambda_total = lambda_home + lambda_away
-
-    dc_matrix = compute_dixon_coles_matrix(lambda_home, lambda_away)
-    prob_home_win = float(np.sum(np.tril(dc_matrix, -1)))
-    prob_draw = float(np.sum(np.diag(dc_matrix)))
-    prob_1x = prob_home_win + prob_draw
-
-    context_str = f"{clean_home} {clean_away} {competition}".lower()
-    is_derby = any(kw in context_str for kw in DERBY_KEYWORDS)
-    
-    pass_shield = (prob_1x >= 0.78) and (lambda_total <= 2.85) and not is_derby
-    if not pass_shield:
-        return {}
-
-    theoretical_fair_odds = round(1.0 / prob_1x, 2)
-    risk_metrics = calculate_ev_and_kelly(prob_1x, actual_odds, bankroll, kelly_mult)
-
-    return {
-        "markets": "1X / Defensive Shield",
-        "primary_market": "1X",
-        "xg": round(lambda_total, 2),
-        "dc_prob": round(prob_1x * 100, 2),
-        "fair_odds": theoretical_fair_odds,
-        "market_odds": actual_odds,
-        "ev_pct": risk_metrics["ev_pct"],
-        "kelly_pct": risk_metrics["kelly_pct"],
-        "stake": risk_metrics["stake"],
-        "derby": "Yes" if is_derby else "No",
-    }
-
-
-def parse_and_scan_schedules(
-    raw_text: str, bankroll: float, kelly_mult: float, sample_odds: float
-) -> tuple:
-    lines = [line.strip() for line in raw_text.split("\n") if line.strip()]
-    current_competition = "MATCHDAY FIXTURE"
-    qualified_rows = []
-    scanned_count = 0
-
-    for line in lines:
-        if (
-            ":" in line or "Standings" in line or "League" in line or "Cup" in line
-        ) and " - " not in line and not re.match(r"^\d{2}:\d{2}", line):
-            current_competition = line.replace("Standings", "").strip()
+        if lambda_total > max_xg:
             continue
 
-        time_match = re.match(r"^(\d{2}:\d{2})(.*)$", line)
-        if time_match:
-            kickoff = time_match.group(1).strip()
-            rest = time_match.group(2).strip()
-            rest = re.sub(r"^(Postponed|Cancelled|\d+['\+]?)\s*", "", rest, flags=re.IGNORECASE).strip()
+        dc_matrix = compute_dixon_coles_matrix(lambda_home, lambda_away)
+        metrics = evaluate_triple_markets(dc_matrix)
 
-            if " - " in rest:
-                parts = rest.split(" - ", 1)
-                home = parts[0].strip()
-                away_raw = parts[1].strip()
+        # Filter strictly within the 20% to 100% probability band
+        if metrics["min_prob"] < min_threshold:
+            continue
 
-                away = re.sub(r"\s+(\d+-\d+.*|\(?Pen:.*\)|\s+-)$", "", away_raw).strip()
-                away = re.sub(r"\s+-\s*$", "", away).strip()
-                away = re.sub(r"\s+\d+\.\d+.*$", "", away).strip()
-                away = re.split(r"\s+\d+-\d+", away)[0].strip()
-
-                scanned_count += 1
-                res = evaluate_fixture_quant(
-                    home, away, current_competition, bankroll, kelly_mult, sample_odds
-                )
-
-                if res:
-                    match_label = f"{home} vs {away}"
-                    log_signal_for_clv(
-                        match_label,
-                        current_competition,
-                        res["primary_market"],
-                        res["market_odds"],
-                        res["dc_prob"] / 100.0,
-                    )
-                    qualified_rows.append(
-                        {
-                            "Time": kickoff,
-                            "Competition": current_competition,
-                            "Match": match_label,
-                            "Markets": res["markets"],
-                            "xG": res["xg"],
-                            "DC Prob": f"{res['dc_prob']}%",
-                            "Fair Odds": res["fair_odds"],
-                            "Bookie Odds": res["market_odds"],
-                            "EV Edge": f"+{res['ev_pct']}%" if res["ev_pct"] > 0 else f"{res['ev_pct']}%",
-                            "Kelly %": f"{res['kelly_pct']}%",
-                            "Stake": res["stake"],
-                            "Derby": res["derby"],
-                        }
-                    )
-
-    return pd.DataFrame(qualified_rows), scanned_count
-
-
-# ==========================================
-# STREAMLIT UI & SIDEBAR CONTROLS
-# ==========================================
-with st.sidebar:
-    st.header("⚙️ Quantitative Controls")
-    bankroll_input = st.number_input("Total Bankroll", min_value=10.0, value=1000.0, step=50.0)
-    kelly_fraction_input = st.slider("Kelly Fraction Multiplier", 0.05, 1.0, 0.25, 0.05)
-    reference_bookie_odds = st.number_input("Reference Bookmaker Odds (For EV Calculation)", min_value=1.01, value=1.35, step=0.01)
-    auto_telegram = st.checkbox("Auto-Dispatch Qualified Signals to Telegram", value=True)
-
-raw_schedule_input = st.text_area(
-    "Paste Flashscore Schedule Here:",
-    height=280,
-    placeholder="17:00 Arsenal - Chelsea  -\n20:00 Real Madrid - Barcelona  -"
-)
-
-if st.button("🚀 Run Quantitative Scan", type="primary"):
-    if not raw_schedule_input.strip():
-        st.warning("Please paste Flashscore schedule text into the text area above.")
-    else:
-        df_results, total_scanned = parse_and_scan_schedules(
-            raw_schedule_input, bankroll_input, kelly_fraction_input, reference_bookie_odds
-        )
-        st.caption(f"Scanned & quality-vetted {total_scanned} total matches across all competitions.")
-
-        if not df_results.empty:
-            st.subheader(f"✅ Verified High-Confidence Value Signals ({len(df_results)} Found)")
-            st.dataframe(df_results, width="stretch")
-
-            signal_blocks = []
-            for _, r in df_results.iterrows():
-                block = (
-                    f"🚨 *Quantitative Signal (Fair vs Market)*\n"
-                    f"⚽ *{r['Match']}* | `{r['Time']}`\n"
-                    f"🏆 {r['Competition']}\n"
-                    f"🎯 *Picks:* `{r['Markets']}`\n"
-                    f"📊 *DC Prob:* `{r['DC Prob']}` | *xG:* `{r['xG']}`\n"
-                    f"⚖️ *Fair Odds:* `{r['Fair Odds']}` | *Bookie Odds:* `{r['Bookie Odds']}`\n"
-                    f"💹 *EV Edge:* `{r['EV Edge']}` | *Kelly Stake:* `{r['Kelly %']}` (`{r['Stake']}`)"
-                )
-                signal_blocks.append(block)
-
-            full_telegram_payload = "\n\n---\n\n".join(signal_blocks)
-
-            if auto_telegram:
-                dispatch_status = send_telegram_alert(full_telegram_payload)
-                if dispatch_status.get("ok"):
-                    st.success("Dispatched verified signals to Telegram monitor.")
-                else:
-                    st.error(f"Telegram dispatch status: {dispatch_status}")
-
-            st.markdown("### 📱 Telegram Payload")
-            st.code(full_telegram_payload, language="text")
+        if metrics["min_prob"] >= threshold:
+            status_tag = "★ QUALIFIED"
         else:
-            st.info("0 matches passed the Quality Gate and Defensive Shield criteria.")
+            status_tag = "◆ MODERATE"
+
+        row = {
+            "time": item["time"],
+            "competition": item["competition"],
+            "match": f"{item['home']} vs {item['away']}",
+            "xg": round(lambda_total, 2),
+            "score": metrics["min_prob"],
+            "prob_1x": f"{metrics['1x_prob']}%",
+            "prob_h_plus_1_5": f"{metrics['home_plus_1_5_prob']}%",
+            "prob_u2_5": f"{metrics['under_2_5_prob']}%",
+            "status": status_tag,
+        }
+        scanned_results.append(row)
+
+    scanned_results.sort(key=lambda x: x["score"], reverse=True)
+
+    for row in scanned_results:
+        copyable_lines.append(
+            f"{row['time']} | {row['competition']} | {row['match']} | "
+            f"xG:{row['xg']} | MinProb:{round(row['score']*100, 1)}% | "
+            f"1X:{row['prob_1x']} | H+1.5:{row['prob_h_plus_1_5']} | U2.5:{row['prob_u2_5']} | {row['status']}"
+        )
+
+    return {
+        "summary": {
+            "total_leagues": cleaned_data["leagues_count"],
+            "total_fixtures": cleaned_data["fixtures_count"],
+            "ranked_count": len(scanned_results),
+        },
+        "cleaned_schedule": cleaned_data["cleaned_text"],
+        "ranked_fixtures": scanned_results,
+        "copyable_block": "\n".join(copyable_lines),
+    }
+
+
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
+
+
+@app.post("/scan")
+def scan_api(payload: ScanRequest):
+    result = run_pipeline(
+        raw_text=payload.raw_text,
+        threshold=payload.threshold,
+        min_threshold=payload.min_threshold,
+        max_xg=payload.max_xg,
+    )
+    return JSONResponse(content=result)
+
+
+@app.get("/", response_class=HTMLResponse)
+def mobile_ui():
+    return """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Ranked Dixon-Coles Scanner (20%-69%+)</title>
+        <style>
+            body { font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #f8fafc; padding: 16px; margin: 0; }
+            .container { max-width: 720px; margin: auto; }
+            h2 { font-size: 1.25rem; margin-bottom: 8px; color: #38bdf8; }
+            textarea { width: 100%; height: 180px; background: #1e293b; color: #f8fafc; border: 1px solid #334155; border-radius: 8px; padding: 10px; box-sizing: border-box; font-size: 14px; }
+            button { width: 100%; padding: 12px; margin-top: 10px; background: #0284c7; color: white; border: none; border-radius: 8px; font-weight: bold; font-size: 16px; cursor: pointer; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h2>Ranked Dixon-Coles Scanner (20% - 69%+)</h2>
+            <form method="post" action="/ui-scan">
+                <textarea name="raw_text"></textarea>
+                <button type="submit">Run Pipeline</button>
+            </form>
+        </div>
+    </body>
+    </html>
+    """
+
+
+@app.post("/ui-scan", response_class=HTMLResponse)
+def mobile_ui_scan(raw_text: str = Form(...)):
+    res = run_pipeline(raw_text)
+    s = res["summary"]
+    copy_text = res["copyable_block"] or "No fixtures met the 20%-69%+ probability band."
+    cleaned_preview = res["cleaned_schedule"] or "No valid fixtures parsed."
+
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Ranked Results</title>
+        <style>
+            body {{ font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #f8fafc; padding: 16px; margin: 0; }}
+            .container {{ max-width: 720px; margin: auto; }}
+            h3 {{ color: #38bdf8; margin-top: 18px; margin-bottom: 6px; font-size: 1.05rem; }}
+            .stats {{ display: flex; justify-content: space-between; background: #1e293b; padding: 12px; border-radius: 8px; font-weight: bold; font-size: 14px; border: 1px solid #334155; }}
+            pre {{ background: #1e293b; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13px; border: 1px solid #334155; white-space: pre-wrap; }}
+            button {{ width: 100%; padding: 12px; margin-top: 8px; background: #10b981; color: white; border: none; border-radius: 8px; font-weight: bold; font-size: 15px; cursor: pointer; }}
+            a {{ display: block; text-align: center; margin-top: 16px; color: #38bdf8; text-decoration: none; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="stats">
+                <span>Leagues: {s['total_leagues']}</span>
+                <span>Fixtures: {s['total_fixtures']}</span>
+                <span>Ranked (20%+): {s['ranked_count']}</span>
+            </div>
+
+            <h3>Ranked Copyable Results (69% down to 20%)</h3>
+            <pre id="copyBlock">{copy_text}</pre>
+            <button onclick="navigator.clipboard.writeText(document.getElementById('copyBlock').innerText)">Copy Results</button>
+
+            <h3>Cleaned Schedule</h3>
+            <pre>{cleaned_preview}</pre>
+
+            <a href="/">← Back</a>
+        </div>
+    </body>
+    </html>
+    """
+
+
+if __name__ == "__main__":
+    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=False)
