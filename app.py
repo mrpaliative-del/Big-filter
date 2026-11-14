@@ -1,5 +1,5 @@
 import csv
-from datetime import datetime
+from datetime import datetime, timezone
 import os
 import re
 import httpx
@@ -188,7 +188,7 @@ def log_signal_for_clv(
             )
         writer.writerow(
             [
-                datetime.utcnow().isoformat(),
+                datetime.now(timezone.utc).isoformat(),
                 competition,
                 match_name,
                 market,
@@ -367,7 +367,7 @@ if st.button("🚀 Run Quantitative Scan", type="primary"):
 
         if not df_results.empty:
             st.subheader(f"✅ Qualified Value Signals ({len(df_results)} Found)")
-            st.dataframe(df_results, use_container_width=True)
+            st.dataframe(df_results, width="stretch")
 
             signal_blocks = []
             for _, r in df_results.iterrows():
