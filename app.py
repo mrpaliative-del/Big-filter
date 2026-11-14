@@ -49,10 +49,6 @@ CORE_ELITE_PROFILES = {
 # 0. DISTRICT-PURPOSE DYNAMIC PROFILER
 # ==========================================
 def get_dynamic_team_profile(team_name: str, competition: str, is_home: bool) -> tuple:
-    """
-    District-calibrated profiler with home/away differentiation to ensure
-    realistic xG, PPG differentials, and market pricing for global leagues.
-    """
     key = team_name.lower().strip()
     if key in CORE_ELITE_PROFILES:
         base = CORE_ELITE_PROFILES[key]
@@ -253,31 +249,13 @@ def evaluate_fixture_quant(
 
     dc_matrix = compute_dixon_coles_matrix(lambda_home, lambda_away)
 
-    # Core Probabilities
     prob_home_win = float(np.sum(np.tril(dc_matrix, -1)))
     prob_draw = float(np.sum(np.diag(dc_matrix)))
     prob_1x = prob_home_win + prob_draw
 
-    prob_u25 = sum(
-        dc_matrix[x, y]
-        for x in range(dc_matrix.shape[0])
-        for y in range(dc_matrix.shape[1])
-        if (x + y) <= 2
-    )
-
-    prob_home_ah_plus_15 = 1.0 - float(
-        sum(
-            dc_matrix[x, y]
-            for x in range(dc_matrix.shape[0])
-            for y in range(dc_matrix.shape[1])
-            if (y - x) >= 2
-        )
-    )
-
-    # --- CALIBRATED GLOBAL DEFENSIVE SHIELD FILTER ---
+    # Calibrated Global Defensive Shield Filter
     pass_fortress_shield = (
         (prob_1x >= 0.70)
-        and (prob_home_ah_plus_15 >= 0.75)
         and (lambda_total <= 3.20)
         and not is_derby
     )
@@ -328,6 +306,7 @@ def parse_and_scan_schedules(
         if time_match:
             kickoff = time_match.group(1).strip()
             rest = time_match.group(2).strip()
+            rest = re.sub(r"^(Postponed|Cancelled|\d+['\+]?)\s*", "", rest, flags=re.IGNORECASE).strip()
 
             if " - " in rest:
                 parts = rest.split(" - ", 1)
