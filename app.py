@@ -1,3 +1,4 @@
+import os
 import re
 import numpy as np
 from scipy.stats import poisson
@@ -8,8 +9,8 @@ import uvicorn
 
 app = FastAPI(
     title="Dixon-Coles Ranked Fixture Scanner",
-    description="Universal fixture parsing and probability ranking pipeline (20% - 69%+ band).",
-    version="3.3.0",
+    description="Universal fixture parsing and probability ranking pipeline.",
+    version="3.3.1",
 )
 
 
@@ -187,7 +188,6 @@ def run_pipeline(raw_text: str, threshold: float = 0.695, min_threshold: float =
         dc_matrix = compute_dixon_coles_matrix(lambda_home, lambda_away)
         metrics = evaluate_triple_markets(dc_matrix)
 
-        # Filter strictly within the 20% to 100% probability band
         if metrics["min_prob"] < min_threshold:
             continue
 
@@ -321,4 +321,5 @@ def mobile_ui_scan(raw_text: str = Form(...)):
 
 
 if __name__ == "__main__":
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=False)
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run("app:app", host="0.0.0.0", port=port)
