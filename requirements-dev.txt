@@ -1,0 +1,3 @@
+pytest>=8
+httpx>=0.27
+scipy>=1.11  # only to cross-check the pmf in tests

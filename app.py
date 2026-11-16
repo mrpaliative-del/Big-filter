@@ -1,336 +1,108 @@
+import logging
 import os
-import re
-import numpy as np
-from scipy.stats import poisson
+
+import uvicorn
 from fastapi import FastAPI, Form
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel
-import uvicorn
+from typing import Literal
+
+from pydantic import BaseModel, Field, model_validator
+
+import picklog
+import ui
+from bot import send_telegram_alert
+from scanner.calibration import Calibration
+from scanner.model import Ratings
+from scanner.pipeline import (
+    CALIBRATED_THRESHOLD,
+    DEFAULT_MAX_XG,
+    DEFAULT_MIN_THRESHOLD,
+    DEFAULT_THRESHOLD,
+    run_pipeline,
+)
+
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+
+MAX_INPUT_CHARS = 200_000
+RATINGS = Ratings.from_json(os.getenv("RATINGS_PATH", "ratings.json"))
+PICKS_PATH = os.getenv("PICKS_PATH", "picks.csv")
+CALIBRATION = Calibration.load(os.getenv("CALIBRATION_PATH", "calibration.json"))
+CALIBRATION_ODDS = Calibration.load(os.getenv("CALIBRATION_ODDS_PATH", "calibration_odds.json"))
+FORM_THRESHOLD = CALIBRATED_THRESHOLD if (CALIBRATION or CALIBRATION_ODDS) else DEFAULT_THRESHOLD
 
 app = FastAPI(
     title="Dixon-Coles Flashscore Scanner",
     description="Parser and probability ranking pipeline trained for Flashscore mobile fixtures.",
-    version="3.6.0",
+    version="4.0.0",
 )
 
 
 class ScanRequest(BaseModel):
-    raw_text: str
-    threshold: float = 0.695
-    min_threshold: float = 0.20
-    max_xg: float = 3.25
+    raw_text: str = Field(max_length=MAX_INPUT_CHARS)
+    threshold: float | None = Field(None, ge=0, le=1)  # default depends on rank_by
+    rank_by: Literal["min", "all3"] = "min"
+    min_threshold: float = Field(DEFAULT_MIN_THRESHOLD, ge=0, le=1)
+    max_xg: float = Field(DEFAULT_MAX_XG, gt=0, le=10)
+    include_unrated: bool = False
+    use_calibration: bool = True
+    log_picks: bool = False
+    notify_telegram: bool = False
 
-
-def clean_and_parse_flashscore_fixtures(raw_text: str) -> dict:
-    if not raw_text or not raw_text.strip():
-        return {
-            "cleaned_text": "",
-            "leagues_count": 0,
-            "fixtures_count": 0,
-            "fixtures": [],
-        }
-
-    skip_phrases = [
-        "bet on football", "refresh now", "flashscore", "livescore",
-        "basketball", "tennis", "ice hockey", "field hockey", "handball",
-        "volleyball", "baseball", "am. football", "rugby union", "cricket",
-        "more sports", "top", "m.flashscore", "provided live", "mobile version",
-        "advertisement", "all games", "live", "finished", "odds", "draws",
-        "football |", "gamble responsibly", "gambling therapy", "copyright",
-        "today | yesterday | tomorrow", "football » tomorrow"
-    ]
-
-    lines = raw_text.split("\n")
-    cleaned_schedule = []
-    structured_fixtures = []
-    current_comp = "GLOBAL LEAGUES"
-    leagues_set = set()
-    leagues_set.add(current_comp)
-
-    for line in lines:
-        line_str = line.strip()
-        if not line_str:
-            continue
-
-        lower_line = line_str.lower()
-        if any(p in lower_line for p in skip_phrases):
-            continue
-
-        # Detect competition headers (e.g., "NIGERIA: NPFL Standings" or "AFRICA: Africa Cup...")
-        if ":" in line_str and " - " not in line_str and not re.search(r"\d{2}:\d{2}", line_str):
-            current_comp = line_str.replace("Standings", "").replace("Table", "").strip()
-            leagues_set.add(current_comp)
-            cleaned_schedule.append(f"\n--- {current_comp.upper()} ---")
-            continue
-
-        if ":" not in line_str[:5] and " - " not in line_str and len(line_str) > 3 and not re.search(r"\d+-\d+", line_str) and not re.search(r"\d{2}:\d{2}", line_str):
-            current_comp = line_str.replace("Standings", "").replace("Table", "").strip()
-            leagues_set.add(current_comp)
-            cleaned_schedule.append(f"\n--- {current_comp.upper()} ---")
-            continue
-
-        time_str = "00:00"
-        match_part = line_str
-
-        # Robust extraction for times glued directly to team strings (e.g., "16:00Enyimba")
-        time_match = re.search(r"^(\d{2}:\d{2})", line_str)
-        if time_match:
-            time_str = time_match.group(1)
-            match_part = line_str[len(time_str):].strip()
-        else:
-            time_match_embedded = re.search(r"\b(\d{2}:\d{2})\b", line_str)
-            if time_match_embedded:
-                time_str = time_match_embedded.group(1)
-                parts = line_str.split(time_str, 1)
-                match_part = parts[1].strip()
-
-        # Remove match status prefixes or live scores
-        match_part = re.sub(
-            r"^(Postponed|Cancelled|\d+['\+]?)\s*", "", match_part, flags=re.IGNORECASE
-        ).strip()
-
-        if " - " in match_part:
-            parts = match_part.split(" - ", 1)
-            home_team = parts[0].strip()
-            away_team = re.sub(r"\s*-\s*$", "", parts[1]).strip()
-            away_team = re.split(r"\s+\d+-\d+", away_team)[0].strip()
-            away_team = re.sub(r"\s+\d+$", "", away_team).strip()
-
-            if home_team and away_team and home_team.lower() != away_team.lower():
-                cleaned_line = f"{time_str} | {home_team} vs {away_team}"
-                cleaned_schedule.append(cleaned_line)
-                structured_fixtures.append(
-                    {
-                        "time": time_str,
-                        "competition": current_comp.upper(),
-                        "home": home_team,
-                        "away": away_team,
-                    }
-                )
-
-    return {
-        "cleaned_text": "\n".join(cleaned_schedule).strip(),
-        "leagues_count": len(leagues_set),
-        "fixtures_count": len(structured_fixtures),
-        "fixtures": structured_fixtures,
-    }
-
-
-def derive_team_parameters(is_home: bool) -> tuple[float, float]:
-    base_scored = 1.35
-    base_conceded = 1.35
-    venue_mult_scored = 1.08 if is_home else 0.92
-    venue_mult_conceded = 0.90 if is_home else 1.12
-    scored = max(0.5, base_scored * venue_mult_scored)
-    conceded = max(0.3, base_conceded * venue_mult_conceded)
-    return scored, conceded
-
-
-def compute_dixon_coles_matrix(
-    lambda_home: float, lambda_away: float, rho: float = -0.11, max_goals: int = 8
-) -> np.ndarray:
-    matrix = np.zeros((max_goals, max_goals))
-    for x in range(max_goals):
-        for y in range(max_goals):
-            base_prob = poisson.pmf(x, lambda_home) * poisson.pmf(y, lambda_away)
-            if x == 0 and y == 0:
-                tau = 1.0 - (lambda_home * lambda_away * rho)
-            elif x == 0 and y == 1:
-                tau = 1.0 + (lambda_home * rho)
-            elif x == 1 and y == 0:
-                tau = 1.0 + (lambda_away * rho)
-            elif x == 1 and y == 1:
-                tau = 1.0 - rho
-            else:
-                tau = 1.0
-            matrix[x, y] = max(0.0, base_prob * tau)
-
-    total = np.sum(matrix)
-    if total > 0:
-        matrix /= total
-    else:
-        matrix = np.ones((max_goals, max_goals)) / (max_goals * max_goals)
-
-    return matrix
-
-
-def evaluate_triple_markets(dc_matrix: np.ndarray) -> dict:
-    max_goals = dc_matrix.shape[0]
-    prob_1x = 0.0
-    prob_home_plus_1_5 = 0.0
-    prob_under_2_5 = 0.0
-
-    for x in range(max_goals):
-        for y in range(max_goals):
-            p = dc_matrix[x, y]
-            if x >= y:
-                prob_1x += p
-            if (y - x) <= 1:
-                prob_home_plus_1_5 += p
-            if (x + y) <= 2:
-                prob_under_2_5 += p
-
-    min_prob = min(prob_1x, prob_home_plus_1_5, prob_under_2_5)
-
-    return {
-        "min_prob": min_prob,
-        "1x_prob": round(prob_1x * 100, 2),
-        "home_plus_1_5_prob": round(prob_home_plus_1_5 * 100, 2),
-        "under_2_5_prob": round(prob_under_2_5 * 100, 2),
-    }
-
-
-def run_pipeline(raw_text: str, threshold: float = 0.695, min_threshold: float = 0.20, max_xg: float = 3.25) -> dict:
-    cleaned_data = clean_and_parse_flashscore_fixtures(raw_text)
-    scanned_results = []
-    copyable_lines = []
-
-    for item in cleaned_data["fixtures"]:
-        h_sc, h_co = derive_team_parameters(is_home=True)
-        a_sc, a_co = derive_team_parameters(is_home=False)
-
-        lambda_home = (h_sc + a_co) / 2.0
-        lambda_away = (a_sc + h_co) / 2.0
-        lambda_total = lambda_home + lambda_away
-
-        if lambda_total > max_xg:
-            continue
-
-        dc_matrix = compute_dixon_coles_matrix(lambda_home, lambda_away)
-        metrics = evaluate_triple_markets(dc_matrix)
-
-        if metrics["min_prob"] < min_threshold:
-            continue
-
-        if metrics["min_prob"] >= threshold:
-            status_tag = "★ QUALIFIED"
-        else:
-            status_tag = "◆ MODERATE"
-
-        row = {
-            "time": item["time"],
-            "competition": item["competition"],
-            "match": f"{item['home']} vs {item['away']}",
-            "xg": round(lambda_total, 2),
-            "score": metrics["min_prob"],
-            "prob_1x": f"{metrics['1x_prob']}%",
-            "prob_h_plus_1_5": f"{metrics['home_plus_1_5_prob']}%",
-            "prob_u2_5": f"{metrics['under_2_5_prob']}%",
-            "status": status_tag,
-        }
-        scanned_results.append(row)
-
-    scanned_results.sort(key=lambda x: x["score"], reverse=True)
-
-    for row in scanned_results:
-        copyable_lines.append(
-            f"{row['time']} | {row['competition']} | {row['match']} | "
-            f"xG:{row['xg']} | MinProb:{round(row['score']*100, 1)}% | "
-            f"1X:{row['prob_1x']} | H+1.5:{row['prob_h_plus_1_5']} | U2.5:{row['prob_u2_5']} | {row['status']}"
-        )
-
-    return {
-        "summary": {
-            "total_leagues": cleaned_data["leagues_count"],
-            "total_fixtures": cleaned_data["fixtures_count"],
-            "ranked_count": len(scanned_results),
-        },
-        "cleaned_schedule": cleaned_data["cleaned_text"],
-        "ranked_fixtures": scanned_results,
-        "copyable_block": "\n".join(copyable_lines),
-    }
+    @model_validator(mode="after")
+    def _min_below_threshold(self):
+        if self.threshold is not None and self.min_threshold > self.threshold:
+            raise ValueError("min_threshold must not exceed threshold")
+        return self
 
 
 @app.get("/health")
 def health_check():
-    return {"status": "ok"}
+    return {"status": "ok", "ratings_loaded": len(RATINGS), "calibration_loaded": bool(CALIBRATION), "calibration_odds_loaded": bool(CALIBRATION_ODDS)}
 
 
 @app.post("/scan")
 def scan_api(payload: ScanRequest):
     result = run_pipeline(
-        raw_text=payload.raw_text,
+        payload.raw_text,
         threshold=payload.threshold,
         min_threshold=payload.min_threshold,
         max_xg=payload.max_xg,
+        ratings=RATINGS,
+        include_unrated=payload.include_unrated,
+        rank_by=payload.rank_by,
+        calibration=CALIBRATION if payload.use_calibration else None,
+        calibration_odds=CALIBRATION_ODDS if payload.use_calibration else None,
     )
+    if payload.log_picks:
+        result["logged"] = picklog.append_picks(result["ranked_fixtures"], PICKS_PATH)
+    if payload.notify_telegram:
+        result["telegram"] = send_telegram_alert(result["copyable_block"])
     return JSONResponse(content=result)
 
 
 @app.get("/", response_class=HTMLResponse)
 def mobile_ui():
-    return """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>Flashscore Dixon-Coles Scanner</title>
-        <style>
-            body { font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #f8fafc; padding: 16px; margin: 0; }
-            .container { max-width: 720px; margin: auto; }
-            h2 { font-size: 1.25rem; margin-bottom: 8px; color: #38bdf8; }
-            textarea { width: 100%; height: 200px; background: #1e293b; color: #f8fafc; border: 1px solid #334155; border-radius: 8px; padding: 10px; box-sizing: border-box; font-size: 13px; font-family: monospace; }
-            button { width: 100%; padding: 12px; margin-top: 10px; background: #0284c7; color: white; border: none; border-radius: 8px; font-weight: bold; font-size: 16px; cursor: pointer; }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h2>Flashscore Mobile Fixture Scanner</h2>
-            <form method="post" action="/ui-scan">
-                <textarea name="raw_text" placeholder="Paste raw Flashscore mobile copy here..."></textarea>
-                <button type="submit">Run Flashscore Pipeline</button>
-            </form>
-        </div>
-    </body>
-    </html>
-    """
+    return ui.render_form(FORM_THRESHOLD, DEFAULT_MIN_THRESHOLD, DEFAULT_MAX_XG)
 
 
 @app.post("/ui-scan", response_class=HTMLResponse)
-def mobile_ui_scan(raw_text: str = Form("")):
-    res = run_pipeline(raw_text)
-    s = res["summary"]
-    copy_text = res["copyable_block"] or "No fixtures met the 20%-69%+ probability band."
-    cleaned_preview = res["cleaned_schedule"] or "No valid fixtures parsed."
-
-    return f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>Scan Results</title>
-        <style>
-            body {{ font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #f8fafc; padding: 16px; margin: 0; }}
-            .container {{ max-width: 720px; margin: auto; }}
-            h3 {{ color: #38bdf8; margin-top: 18px; margin-bottom: 6px; font-size: 1.05rem; }}
-            .stats {{ display: flex; justify-content: space-between; background: #1e293b; padding: 12px; border-radius: 8px; font-weight: bold; font-size: 14px; border: 1px solid #334155; }}
-            pre {{ background: #1e293b; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13px; border: 1px solid #334155; white-space: pre-wrap; font-family: monospace; }}
-            button {{ width: 100%; padding: 12px; margin-top: 8px; background: #10b981; color: white; border: none; border-radius: 8px; font-weight: bold; font-size: 15px; cursor: pointer; }}
-            a {{ display: block; text-align: center; margin-top: 16px; color: #38bdf8; text-decoration: none; }}
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <div class="stats">
-                <span>Leagues: {s['total_leagues']}</span>
-                <span>Fixtures: {s['total_fixtures']}</span>
-                <span>Ranked (20%+): {s['ranked_count']}</span>
-            </div>
-
-            <h3>Ranked Copyable Results (69% down to 20%)</h3>
-            <pre id="copyBlock">{copy_text}</pre>
-            <button onclick="navigator.clipboard.writeText(document.getElementById('copyBlock').innerText)">Copy Results</button>
-
-            <h3>Cleaned Schedule</h3>
-            <pre>{cleaned_preview}</pre>
-
-            <a href="/">← Back</a>
-        </div>
-    </body>
-    </html>
-    """
+def mobile_ui_scan(
+    raw_text: str = Form(""),
+    threshold: float = Form(FORM_THRESHOLD),
+    min_threshold: float = Form(DEFAULT_MIN_THRESHOLD),
+    max_xg: float = Form(DEFAULT_MAX_XG),
+    include_unrated: bool = Form(False),
+    log_picks: bool = Form(False),
+):
+    if len(raw_text) > MAX_INPUT_CHARS:
+        return HTMLResponse(ui.render_error(f"Input too large (max {MAX_INPUT_CHARS:,} characters)."), status_code=413)
+    if not (0 <= min_threshold <= threshold <= 1) or not (0 < max_xg <= 10):
+        return HTMLResponse(ui.render_error("Thresholds must satisfy 0 ≤ Show ≤ Qualify ≤ 1, and 0 < Max xG ≤ 10."), status_code=422)
+    res = run_pipeline(raw_text, threshold, min_threshold, max_xg, ratings=RATINGS, include_unrated=include_unrated, calibration=CALIBRATION, calibration_odds=CALIBRATION_ODDS)
+    if log_picks:
+        res["logged"] = picklog.append_picks(res["ranked_fixtures"], PICKS_PATH)
+    return ui.render_results(res, threshold, min_threshold)
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    uvicorn.run("app:app", host="0.0.0.0", port=port)
+    uvicorn.run("app:app", host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
