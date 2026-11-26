@@ -1,5 +1,0 @@
-{
-  "_comment": "Copy to ratings.json. Multipliers vs an average team (1.0). defence > 1 = leaky. Team names are matched case-insensitively and must match the Flashscore spelling.",
-  "Example Home FC": {"attack": 1.20, "defence": 0.85},
-  "Example Away United": {"attack": 0.90, "defence": 1.10}
-}
