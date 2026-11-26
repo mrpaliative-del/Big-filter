@@ -1,0 +1,11 @@
+fastapi>=0.110
+uvicorn>=0.29
+numpy>=1.26
+pandas>=2.0
+scipy>=1.11
+scikit-learn>=1.3
+pydantic>=2.5
+python-multipart>=0.0.9
+requests>=2.31
+openpyxl>=3.1          # Excel export in draw_scanner.py
+# xgboost>=2.0         # optional: used by the draw scanner when installed (else scikit-learn's HistGradientBoostingClassifier)
